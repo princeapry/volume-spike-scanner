@@ -1,0 +1,50 @@
+name: Volume Spike Scanner
+
+on:
+  # Jalan otomatis tiap jam di menit ke-2 (waktu UTC).
+  # Menit ke-2 dipilih supaya candle 1 jam sebelumnya sudah pasti close.
+  # Catatan: jadwal GitHub Actions bisa telat beberapa menit saat server ramai.
+  schedule:
+    - cron: "2 * * * *"
+  # Bisa juga dijalankan manual dari tab Actions -> Run workflow
+  workflow_dispatch:
+
+# Cegah dua run berjalan bersamaan (misal run manual + terjadwal)
+concurrency:
+  group: volume-spike-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Jalankan scanner
+        env:
+          # Rahasia -> isi di Settings > Secrets and variables > Actions > Secrets
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Pengaturan opsional -> isi di tab "Variables" (kosong = pakai default)
+          INTERVAL: ${{ vars.INTERVAL }}
+          LOOKBACK: ${{ vars.LOOKBACK }}
+          SPIKE_MULTIPLIER: ${{ vars.SPIKE_MULTIPLIER }}
+          MIN_CANDLE_QUOTE_VOLUME: ${{ vars.MIN_CANDLE_QUOTE_VOLUME }}
+          MIN_24H_QUOTE_VOLUME: ${{ vars.MIN_24H_QUOTE_VOLUME }}
+          MAX_ALERTS: ${{ vars.MAX_ALERTS }}
+          SEND_IF_EMPTY: ${{ vars.SEND_IF_EMPTY }}
+          TIMEZONE: ${{ vars.TIMEZONE }}
+          BINANCE_BASE_URL: ${{ vars.BINANCE_BASE_URL }}
+        run: python scanner.py
