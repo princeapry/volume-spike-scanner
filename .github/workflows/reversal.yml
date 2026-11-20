@@ -1,0 +1,58 @@
+name: Reversal Scanner (Bullish Engulfing)
+
+on:
+  # Jalan otomatis tiap 4 jam di menit ke-3 (waktu UTC): 00:03, 04:03, 08:03, ...
+  # Candle 4h Binance tutup di jam 00, 04, 08, 12, 16, 20 UTC, jadi menit ke-3
+  # memastikan candle 4h sebelumnya sudah close.
+  # (= 07:03, 11:03, 15:03, 19:03, 23:03, 03:03 WIB)
+  # Catatan: kalau REVERSAL_INTERVAL diganti (misal 1h), sesuaikan juga cron ini.
+  # Jadwal GitHub Actions bisa telat beberapa menit saat server ramai.
+  schedule:
+    - cron: "3 */4 * * *"
+  # Bisa juga dijalankan manual dari tab Actions -> Run workflow
+  workflow_dispatch:
+
+# Cegah dua run berjalan bersamaan (grup terpisah dari volume spike scanner)
+concurrency:
+  group: reversal-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Jalankan reversal scanner
+        env:
+          # Rahasia -> sama dengan scanner volume spike (sudah ada)
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Pengaturan khusus scanner ini -> tab "Variables" (kosong = pakai default)
+          REVERSAL_INTERVAL: ${{ vars.REVERSAL_INTERVAL }}
+          SWING_LOOKBACK: ${{ vars.SWING_LOOKBACK }}
+          SWING_WINDOW: ${{ vars.SWING_WINDOW }}
+          SUPPORT_DISTANCE_PCT: ${{ vars.SUPPORT_DISTANCE_PCT }}
+          VOLUME_MULTIPLIER: ${{ vars.VOLUME_MULTIPLIER }}
+          VOLUME_LOOKBACK: ${{ vars.VOLUME_LOOKBACK }}
+          REVERSAL_MAX_ALERTS: ${{ vars.REVERSAL_MAX_ALERTS }}
+          REVERSAL_SEND_IF_EMPTY: ${{ vars.REVERSAL_SEND_IF_EMPTY }}
+          # Pengaturan bersama dengan scanner volume spike (universe pair & tampilan)
+          MIN_24H_QUOTE_VOLUME: ${{ vars.MIN_24H_QUOTE_VOLUME }}
+          MAX_ALERTS: ${{ vars.MAX_ALERTS }}
+          SEND_IF_EMPTY: ${{ vars.SEND_IF_EMPTY }}
+          TIMEZONE: ${{ vars.TIMEZONE }}
+          BINANCE_BASE_URL: ${{ vars.BINANCE_BASE_URL }}
+        run: python reversal_scanner.py

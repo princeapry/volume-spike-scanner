@@ -2,6 +2,8 @@
 
 Scanner otomatis yang memantau **semua pair USDT di Binance Spot**. Kalau volume sebuah pair naik tajam dibanding rata-rata beberapa candle terakhir, scanner mengirim notifikasi ke **Telegram**. Scanner dijalankan **tiap jam lewat GitHub Actions**, jadi tidak perlu server sendiri.
 
+> 🆕 Repo ini juga berisi scanner kedua, **Reversal Scanner** (`reversal_scanner.py`), untuk mendeteksi setup *bullish engulfing di support + volume* di timeframe 4 jam. Lihat bagian [🔄 Reversal Scanner](#-reversal-scanner-bullish-engulfing-di-support).
+
 - Hanya pakai endpoint **publik** Binance, jadi **tidak perlu API key** akun Binance.
 - Gratis: GitHub Actions gratis tanpa batas menit untuk repo **public**. Repo private dapat 2.000 menit/bulan, dan scanner ini cuma butuh sekitar 1 menit per run (±720 menit/bulan).
 
@@ -50,9 +52,11 @@ Contoh pesan:
 
 ```
 volume-spike-scanner/
-├── scanner.py                         # Script utama
+├── scanner.py                         # Scanner volume spike
+├── reversal_scanner.py                # Scanner bullish engulfing di support
 ├── requirements.txt                   # Dependency Python
-├── .github/workflows/volume-spike.yml # Jadwal GitHub Actions (tiap jam)
+├── .github/workflows/volume-spike.yml # Jadwal volume spike (tiap jam)
+├── .github/workflows/reversal.yml     # Jadwal reversal scanner (tiap 4 jam)
 ├── .gitignore
 └── README.md
 ```
@@ -169,6 +173,74 @@ Setelah ini scanner akan berjalan otomatis **setiap jam di menit ke-2** (misal 1
 
 ---
 
+## 🔄 Reversal Scanner (Bullish Engulfing di Support)
+
+Scanner kedua yang terpisah (`reversal_scanner.py`, workflow `reversal.yml`). Universe pair-nya **sama** dengan volume spike scanner (pair USDT aktif, tanpa stablecoin & leveraged token, lolos filter `MIN_24H_QUOTE_VOLUME`). Secret Telegram-nya juga sama, jadi **tidak perlu setup tambahan**.
+
+### Syarat setup
+
+Dicek di candle terakhir yang **sudah close** (default 4h). Alert hanya dikirim kalau **ketiga** syarat terpenuhi:
+
+1. **Bullish engulfing**: candle sebelumnya merah (`close < open`), candle sekarang hijau (`close > open`), `open sekarang ≤ close sebelumnya`, dan `close sekarang ≥ open sebelumnya`.
+2. **Dekat support**: dicari *swing low* di `SWING_LOOKBACK` candle sebelum candle sekarang. Swing low = candle yang low-nya paling rendah dibanding `SWING_WINDOW` candle di kiri **dan** kanannya. Low candle sekarang harus berjarak ≤ `SUPPORT_DISTANCE_PCT` % (di atas maupun di bawah) dari salah satu swing low itu. Yang ditampilkan adalah swing low terdekat.
+3. **Konfirmasi volume**: volume candle sekarang (USDT) > `VOLUME_MULTIPLIER` × rata-rata `VOLUME_LOOKBACK` candle sebelumnya.
+
+Hasil diurutkan dari rasio volume terbesar. Kalau tidak ada setup, bot **tidak mengirim pesan**, kecuali `REVERSAL_SEND_IF_EMPTY=true`.
+
+Contoh pesan:
+
+```
+🔄 Bullish Engulfing di Support (4h)
+🕒 Candle: 20 Nov 2026 15:00 WIB
+⚙️ Support ≤ 2% dari swing low (30 candle, window 3) | Vol > 1.5x avg 20
+🔎 Discan: 240 pair | Setup: 1
+
+1. 🟢 KMNOUSDT — Vol 1.6x
+   Support: $0.02472 (low -1.62%)
+   Harga: $0.02464 | 24j: 887.29K USDT
+```
+
+`low -1.62%` berarti low candle engulfing sempat turun 1,62% di bawah swing low (menyapu support), lalu ditutup naik. Nama pair bisa diklik untuk membuka halaman trading Binance.
+
+### Jadwal
+
+Workflow `reversal.yml` jalan **tiap 4 jam di menit ke-3 UTC** (00:03, 04:03, 08:03, … UTC = 07:03, 11:03, 15:03, … WIB), tepat setelah candle 4h Binance tutup. Bisa juga dijalankan manual: tab **Actions → Reversal Scanner (Bullish Engulfing) → Run workflow**.
+
+> Kalau `REVERSAL_INTERVAL` diganti ke timeframe lain, ubah juga baris `cron` di `.github/workflows/reversal.yml` supaya jadwalnya cocok dengan tutup candle.
+
+### Pengaturan (GitHub Variables)
+
+Semua opsional. Namanya sengaja dibedakan dari variable volume spike scanner supaya bisa diatur sendiri-sendiri.
+
+| Variable                 | Default | Keterangan |
+|--------------------------|---------|------------|
+| `REVERSAL_INTERVAL`      | `4h`    | Timeframe candle (`1h`, `4h`, `1d`, dll.) |
+| `SWING_LOOKBACK`         | `30`    | Jumlah candle (sebelum candle sekarang) untuk mencari swing low |
+| `SWING_WINDOW`           | `3`     | Jumlah candle kiri & kanan pembanding swing low |
+| `SUPPORT_DISTANCE_PCT`   | `2`     | Jarak maksimal low candle sekarang ke swing low (%) |
+| `VOLUME_MULTIPLIER`      | `1.5`   | Volume candle sekarang harus > N × rata-rata |
+| `VOLUME_LOOKBACK`        | `20`    | Jumlah candle untuk rata-rata volume |
+| `REVERSAL_MAX_ALERTS`    | ikut `MAX_ALERTS` (`30`) | Maksimal pair per notifikasi |
+| `REVERSAL_SEND_IF_EMPTY` | ikut `SEND_IF_EMPTY` (`false`) | `true` = tetap kirim pesan walau tidak ada setup |
+
+Variable bersama yang juga dipakai scanner ini: `MIN_24H_QUOTE_VOLUME`, `TIMEZONE`, `BINANCE_BASE_URL` (lihat tabel di Langkah 5). `DRY_RUN`, `EXCLUDE_STABLES`, `EXCLUDE_LEVERAGED`, `MAX_WORKERS` juga berlaku.
+
+**Tips tuning:**
+- Terlalu banyak alert? Turunkan `SUPPORT_DISTANCE_PCT` ke `1`, atau naikkan `VOLUME_MULTIPLIER` ke `2`.
+- Terlalu jarang? Naikkan `SWING_LOOKBACK` ke `50` (lebih banyak level support), atau turunkan `SWING_WINDOW` ke `2`.
+
+### Jalankan lokal
+
+```powershell
+$env:DRY_RUN = "true"
+$env:REVERSAL_SEND_IF_EMPTY = "true"
+python reversal_scanner.py
+```
+
+> `reversal_scanner.py` meng-import helper dari `scanner.py`, jadi kedua file harus berada di folder yang sama.
+
+---
+
 ## 💻 Menjalankan di Komputer Sendiri (Opsional)
 
 Butuh Python 3.9 atau lebih baru. Download dari [python.org](https://www.python.org/downloads/) dan centang **"Add Python to PATH"** saat install.
@@ -221,4 +293,4 @@ Mac/Linux: ganti `$env:NAMA = "nilai"` dengan `export NAMA="nilai"`.
 
 - Scanner mengecek **candle terakhir yang sudah close**. Candle yang masih berjalan diabaikan supaya hasilnya tidak berubah-ubah.
 - Satu run memakai sekitar 2 × jumlah pair *request weight* Binance. Untuk ±230 pair itu sekitar 500 dari batas 6.000/menit, jadi aman.
-- Volume spike **bukan sinyal beli/jual**. Spike bisa terjadi karena pump, dump, listing baru, berita, atau whale. Selalu cek chart dan konteksnya sendiri sebelum mengambil keputusan. DYOR.
+- Volume spike dan pola bullish engulfing **bukan sinyal beli/jual**. Spike bisa terjadi karena pump, dump, listing baru, berita, atau whale. Selalu cek chart dan konteksnya sendiri sebelum mengambil keputusan. DYOR.
