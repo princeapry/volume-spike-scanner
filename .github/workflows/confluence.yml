@@ -1,0 +1,73 @@
+name: Confluence Scanner (Multi-Signal)
+
+on:
+  # Jalan otomatis tiap jam di menit ke-7 (waktu UTC), supaya overlap dengan
+  # volume spike 1h yang masih fresh ikut tertangkap. Menit ke-7 dipilih
+  # supaya candle 1h sebelumnya sudah close dan tidak barengan dengan scanner
+  # lain (menit 2, 3, 5).
+  # Mau lebih jarang? Ubah cron ini, misal "7 */4 * * *" = tiap 4 jam.
+  # Jadwal GitHub Actions bisa telat beberapa menit saat server ramai.
+  schedule:
+    - cron: "7 * * * *"
+  # Bisa juga dijalankan manual dari tab Actions -> Run workflow
+  workflow_dispatch:
+
+# Cegah dua run berjalan bersamaan (grup terpisah dari scanner lain)
+concurrency:
+  group: confluence-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Jalankan confluence scanner
+        env:
+          # Rahasia -> sama dengan scanner lain (sudah ada)
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Pengaturan khusus scanner ini -> tab "Variables" (kosong = pakai default)
+          CONFLUENCE_MIN_CATEGORIES: ${{ vars.CONFLUENCE_MIN_CATEGORIES }}
+          CONFLUENCE_MAX_ALERTS: ${{ vars.CONFLUENCE_MAX_ALERTS }}
+          CONFLUENCE_SEND_IF_EMPTY: ${{ vars.CONFLUENCE_SEND_IF_EMPTY }}
+          # Ambang kategori Volume Spike (sama dengan volume-spike.yml)
+          INTERVAL: ${{ vars.INTERVAL }}
+          LOOKBACK: ${{ vars.LOOKBACK }}
+          SPIKE_MULTIPLIER: ${{ vars.SPIKE_MULTIPLIER }}
+          MIN_CANDLE_QUOTE_VOLUME: ${{ vars.MIN_CANDLE_QUOTE_VOLUME }}
+          # Ambang kategori Reversal (sama dengan reversal.yml)
+          REVERSAL_INTERVAL: ${{ vars.REVERSAL_INTERVAL }}
+          SWING_LOOKBACK: ${{ vars.SWING_LOOKBACK }}
+          SWING_WINDOW: ${{ vars.SWING_WINDOW }}
+          SUPPORT_DISTANCE_PCT: ${{ vars.SUPPORT_DISTANCE_PCT }}
+          VOLUME_MULTIPLIER: ${{ vars.VOLUME_MULTIPLIER }}
+          VOLUME_LOOKBACK: ${{ vars.VOLUME_LOOKBACK }}
+          # Ambang kategori Akumulasi (sama dengan accumulation.yml)
+          ACCUM_INTERVAL: ${{ vars.ACCUM_INTERVAL }}
+          ACCUM_WINDOW: ${{ vars.ACCUM_WINDOW }}
+          ACCUM_MAX_RANGE_PCT: ${{ vars.ACCUM_MAX_RANGE_PCT }}
+          ACCUM_VOL_RISE_FACTOR: ${{ vars.ACCUM_VOL_RISE_FACTOR }}
+          ACCUM_BASE_LOOKBACK: ${{ vars.ACCUM_BASE_LOOKBACK }}
+          ACCUM_MAX_POSITION: ${{ vars.ACCUM_MAX_POSITION }}
+          ACCUM_EXTRA_BLOCKLIST: ${{ vars.ACCUM_EXTRA_BLOCKLIST }}
+          # Pengaturan bersama (universe pair & tampilan)
+          MIN_24H_QUOTE_VOLUME: ${{ vars.MIN_24H_QUOTE_VOLUME }}
+          MAX_ALERTS: ${{ vars.MAX_ALERTS }}
+          SEND_IF_EMPTY: ${{ vars.SEND_IF_EMPTY }}
+          TIMEZONE: ${{ vars.TIMEZONE }}
+          BINANCE_BASE_URL: ${{ vars.BINANCE_BASE_URL }}
+        run: python confluence_scanner.py

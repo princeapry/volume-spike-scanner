@@ -6,6 +6,8 @@ Scanner otomatis yang memantau **semua pair USDT di Binance Spot**. Kalau volume
 >
 > 🟢 Ada juga scanner ketiga, **Accumulation Scanner** (`accumulation_scanner.py`), untuk mendeteksi pair yang harganya *flat di dekat dasar sementara volumenya naik* (timeframe 4 jam). Lihat bagian [🟢 Accumulation Scanner](#-accumulation-scanner-flat--volume-naik).
 >
+> 🎯 Scanner keempat, **Confluence Scanner** (`confluence_scanner.py`), mencari pair yang kena **lebih dari satu kategori sinyal sekaligus** (Volume Spike, Reversal, Akumulasi). Lihat bagian [🎯 Confluence Scanner](#-confluence-scanner-multi-signal-lintas-kategori).
+>
 > ⭐ Setiap pair di alert volume spike & reversal scanner sekarang punya **skor confluence 0–3**. Pair dengan skor ≥ 2 diberi tanda **🔥 CONFLUENCE**. Lihat bagian [⭐ Skor Confluence](#-skor-confluence).
 
 - Hanya pakai endpoint **publik** Binance, jadi **tidak perlu API key** akun Binance.
@@ -62,11 +64,13 @@ volume-spike-scanner/
 ├── scanner.py                         # Scanner volume spike
 ├── reversal_scanner.py                # Scanner bullish engulfing di support
 ├── accumulation_scanner.py            # Scanner akumulasi (flat + volume naik)
+├── confluence_scanner.py              # Scanner multi-signal lintas kategori
 ├── signals.py                         # Logika deteksi sinyal + skor confluence (dipakai semua scanner)
 ├── requirements.txt                   # Dependency Python
 ├── .github/workflows/volume-spike.yml # Jadwal volume spike (tiap jam)
 ├── .github/workflows/reversal.yml     # Jadwal reversal scanner (tiap 4 jam)
 ├── .github/workflows/accumulation.yml # Jadwal accumulation scanner (tiap 4 jam)
+├── .github/workflows/confluence.yml   # Jadwal confluence scanner (tiap jam)
 ├── .gitignore
 └── README.md
 ```
@@ -404,6 +408,72 @@ $env:DRY_RUN = "true"
 $env:ACCUM_SEND_IF_EMPTY = "true"
 python accumulation_scanner.py
 ```
+
+---
+
+## 🎯 Confluence Scanner (Multi-Signal Lintas Kategori)
+
+Scanner keempat (`confluence_scanner.py`, workflow `confluence.yml`). Tugasnya mencari pair yang kena **lebih dari satu jenis sinyal sekaligus**. Universe pair-nya sama dengan scanner lain, dan secret Telegram-nya juga sama.
+
+### Kategori
+
+Untuk tiap pair, ketiga kategori dievaluasi dalam satu lintasan:
+
+| Kategori | Timeframe | Definisi |
+|---|---|---|
+| **Volume Spike** | `INTERVAL` (1h) | sama persis dengan trigger `scanner.py` |
+| **Reversal** | `REVERSAL_INTERVAL` (4h) | sama persis dengan trigger `reversal_scanner.py` (bullish engulfing di support + konfirmasi volume) |
+| **Akumulasi** | `ACCUM_INTERVAL` (4h) | syarat inti `accumulation_scanner.py` (flat + volume naik + dekat base). Token saham/ETF/emas yang diblokir di scanner akumulasi juga tidak dihitung di kategori ini. Skor kompresi/OI tidak dipakai di sini. |
+
+- Konfigurasi dan fungsi deteksinya **di-import langsung** dari ketiga scanner dan `signals.py`, jadi ambangnya otomatis sama. Kalau misalnya `SPIKE_MULTIPLIER` diubah, kategori Volume Spike di sini ikut berubah. Variable-variable itu sudah dikirim juga di `confluence.yml`.
+- Candle diambil **sekali per timeframe** per pair (default 1h × 22 dan 4h × 181). Reversal dan Akumulasi sama-sama 4h, jadi memakai candle yang sama.
+- Alert hanya untuk pair yang kena `≥ CONFLUENCE_MIN_CATEGORIES` kategori (default 2), dengan penanda **🎯 MULTI-SIGNAL**.
+- Urutan: pair yang kena 3 kategori paling atas, lalu volume 24 jam terbesar.
+- Kalau tidak ada pair multi-signal, bot **tidak mengirim pesan**, kecuali `CONFLUENCE_SEND_IF_EMPTY=true` (atau `SEND_IF_EMPTY=true`).
+
+Contoh pesan:
+
+```
+🎯 MULTI-SIGNAL Confluence Lintas-Kategori
+🕒 Scan: 21 Nov 2026 19:53 WIB
+⚙️ Kategori: Volume Spike (1h) · Reversal (4h) · Akumulasi (4h) | alert ≥ 2 kategori
+📊 Per kategori: Volume Spike 4 · Reversal 1 · Akumulasi 6
+🔎 Discan: 295 pair | Multi-signal: 1
+
+1. 🎯 MULTI-SIGNAL SAPIENUSDT — 2/3
+   Volume Spike + Akumulasi
+   • Volume Spike: spike 5.8x (1h)
+   • Akumulasi: vol naik 1.72x, rentang 18.5%, posisi 39% (4h)
+   Harga: $0.04463 | 24j: 2.98M USDT
+```
+
+Baris "📊 Per kategori" menunjukkan berapa pair yang kena tiap kategori (termasuk yang cuma kena satu), supaya kelihatan kalau scanner jalan normal walau tidak ada overlap.
+
+### Jadwal
+
+Workflow `confluence.yml` jalan **tiap jam di menit ke-7 UTC**, supaya overlap dengan volume spike 1h yang masih fresh ikut tertangkap. Bisa juga dijalankan manual: tab **Actions → Confluence Scanner (Multi-Signal) → Run workflow**. Mau lebih jarang? Ubah baris `cron` di `.github/workflows/confluence.yml` (misal `"7 */4 * * *"` = tiap 4 jam).
+
+> Kategori Reversal dan Akumulasi memakai candle 4h, jadi hasilnya baru berubah tiap 4 jam. Akibatnya, pair yang kena **Reversal + Akumulasi** (tanpa Volume Spike) bisa muncul berulang di beberapa run berturut-turut sampai candle 4h berikutnya close.
+
+### Pengaturan (GitHub Variables)
+
+| Variable                    | Default | Keterangan |
+|-----------------------------|---------|------------|
+| `CONFLUENCE_MIN_CATEGORIES` | `2`     | Minimal jumlah kategori untuk alert (`3` = hanya yang kena semua) |
+| `CONFLUENCE_MAX_ALERTS`     | ikut `MAX_ALERTS` (`30`) | Maksimal pair per notifikasi |
+| `CONFLUENCE_SEND_IF_EMPTY`  | ikut `SEND_IF_EMPTY` (`false`) | `true` = tetap kirim pesan walau tidak ada pair |
+
+Ambang tiap kategori diatur lewat variable scanner aslinya (lihat tabel di bagian masing-masing scanner).
+
+### Jalankan lokal
+
+```powershell
+$env:DRY_RUN = "true"
+$env:CONFLUENCE_SEND_IF_EMPTY = "true"
+python confluence_scanner.py
+```
+
+> `confluence_scanner.py` meng-import `scanner.py`, `reversal_scanner.py`, `accumulation_scanner.py`, dan `signals.py`, jadi semua file harus berada di folder yang sama.
 
 ---
 
