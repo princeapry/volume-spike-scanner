@@ -7,7 +7,10 @@ Cara kerja singkat:
 3. Untuk tiap pair, ambil data candle (klines) lalu bandingkan volume
    candle terakhir yang SUDAH CLOSE dengan rata-rata volume N candle sebelumnya.
 4. Kalau rasionya >= ambang batas (misal 3x), anggap sebagai "spike".
-5. Kirim ringkasan semua spike ke Telegram.
+5. Untuk tiap spike, hitung skor confluence 0-3 (volume spike, bullish
+   engulfing di support, buy pressure) sebagai info tambahan. Skor TIDAK
+   mengubah trigger spike, hanya urutan & tampilan alert (lihat signals.py).
+6. Kirim ringkasan semua spike ke Telegram.
 
 Hanya memakai endpoint market data publik Binance -> tidak butuh API key.
 Semua pengaturan dibaca dari environment variable (lihat README.md).
@@ -26,36 +29,16 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+import signals
+
 
 # ---------------------------------------------------------------------------
 # Konfigurasi (semua bisa diubah lewat environment variable)
 # ---------------------------------------------------------------------------
 
-def _env_float(name: str, default: float) -> float:
-    """Baca env var sebagai float, pakai default kalau kosong/tidak ada."""
-    value = os.getenv(name, "").strip()
-    return float(value) if value else default
-
-
-def _env_int(name: str, default: int) -> int:
-    """Baca env var sebagai int, pakai default kalau kosong/tidak ada."""
-    value = os.getenv(name, "").strip()
-    return int(value) if value else default
-
-
-def _env_str(name: str, default: str) -> str:
-    """Baca env var string. Nilai kosong ("") juga dianggap tidak diisi,
-    karena GitHub Actions mengirim string kosong untuk Variable yang belum dibuat."""
-    return os.getenv(name, "").strip() or default
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    """Baca env var sebagai boolean (true/1/yes/ya dianggap True)."""
-    value = os.getenv(name, "").strip().lower()
-    if not value:
-        return default
-    return value in ("1", "true", "yes", "y", "ya")
-
+# Helper env dipindah ke signals.py (dipakai bersama kedua scanner).
+# Tetap di-import di sini supaya `from scanner import _env_int` dsb. masih jalan.
+from signals import _env_bool, _env_float, _env_int, _env_str  # noqa: E402,F401
 
 # Token bot & chat ID Telegram (WAJIB diisi kecuali DRY_RUN=true)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -85,6 +68,10 @@ EXCLUDE_STABLES = _env_bool("EXCLUDE_STABLES", True)      # buang pair stablecoi
 SEND_IF_EMPTY = _env_bool("SEND_IF_EMPTY", False)         # kirim pesan walau tidak ada spike
 DRY_RUN = _env_bool("DRY_RUN", False)                     # true = cetak ke console saja
 TIMEZONE = _env_str("TIMEZONE", "Asia/Jakarta")           # zona waktu di pesan Telegram
+
+# Ambang skor confluence (env CONF_*, lihat signals.py). Hanya info tambahan
+# di alert, TIDAK mengubah trigger spike di atas.
+CONF = signals.ConfluenceConfig.from_env()
 
 # Daftar stablecoin / aset yang dipatok ke fiat (pair-nya ke USDT hampir
 # tidak pernah bergerak, jadi tidak menarik untuk discan).
@@ -195,61 +182,49 @@ class Spike:
     close_price: float
     candle_open_time: int   # timestamp ms open candle spike
     volume_24h: float
+    confluence: signals.Confluence  # skor 0-3 (info tambahan, bukan trigger)
 
 
 def check_symbol(symbol: str, volume_24h: float) -> Spike | None:
     """
     Cek satu pair. Return objek Spike kalau terdeteksi spike, None kalau tidak.
-
-    Format satu kline dari Binance:
-    [0 openTime, 1 open, 2 high, 3 low, 4 close, 5 volume(base),
-     6 closeTime, 7 quoteVolume(USDT), 8 trades, ...]
+    Format kline Binance: lihat docstring signals.py.
     """
-    # +2: LOOKBACK candle untuk rata-rata + 1 candle yang dicek + 1 candle
-    # yang mungkin masih berjalan (belum close)
+    # Jumlah candle close yang dibutuhkan = yang terbanyak antara trigger spike
+    # (LOOKBACK + 1) dan skor confluence. +1 untuk candle yang mungkin masih
+    # berjalan. Bobot request klines Binance sama saja untuk limit <= 1000.
+    limit = max(LOOKBACK + 1, CONF.candles_needed) + 1
     klines = binance_get(
         "/api/v3/klines",
-        {"symbol": symbol, "interval": INTERVAL, "limit": LOOKBACK + 2},
+        {"symbol": symbol, "interval": INTERVAL, "limit": limit},
     )
 
     # Buang candle terakhir kalau belum close (closeTime masih di masa depan)
-    now_ms = int(time.time() * 1000)
-    closed = [k for k in klines if int(k[6]) < now_ms]
+    closed = signals.only_closed(klines)
 
-    # Butuh minimal LOOKBACK candle historis + 1 candle yang dicek
-    if len(closed) < LOOKBACK + 1:
+    # Trigger utama (tidak berubah): rasio >= SPIKE_MULTIPLIER x rata-rata
+    # LOOKBACK candle DAN volume candle >= MIN_CANDLE_QUOTE_VOLUME USDT
+    spike = signals.check_volume_spike(
+        closed, SPIKE_MULTIPLIER, LOOKBACK, MIN_CANDLE_QUOTE_VOLUME
+    )
+    if spike is None:
         return None
 
     current = closed[-1]                    # candle terakhir yang sudah close
-    history = closed[-(LOOKBACK + 1):-1]    # N candle sebelumnya
-
-    # Pakai quote volume (USDT) supaya bisa dibandingkan antar pair
-    current_qv = float(current[7])
-    avg_qv = sum(float(k[7]) for k in history) / len(history)
-
-    if avg_qv <= 0:
-        return None
-
-    ratio = current_qv / avg_qv
-
-    # Syarat spike: rasio di atas ambang DAN nilai volumenya cukup besar
-    # (supaya pair super sepi yang naik dari 100 -> 500 USDT tidak ikut)
-    if ratio < SPIKE_MULTIPLIER or current_qv < MIN_CANDLE_QUOTE_VOLUME:
-        return None
-
     open_price = float(current[1])
     close_price = float(current[4])
     change_pct = ((close_price - open_price) / open_price * 100) if open_price else 0.0
 
     return Spike(
         symbol=symbol,
-        ratio=ratio,
-        quote_volume=current_qv,
-        avg_quote_volume=avg_qv,
+        ratio=spike.ratio,
+        quote_volume=spike.quote_volume,
+        avg_quote_volume=spike.avg_quote_volume,
         price_change_pct=change_pct,
         close_price=close_price,
         candle_open_time=int(current[0]),
         volume_24h=volume_24h,
+        confluence=signals.evaluate_confluence(closed, CONF),
     )
 
 
@@ -283,8 +258,8 @@ def scan() -> tuple[list[Spike], int, int]:
                 errors += 1
                 print(f"[WARN] {symbol}: {exc}")
 
-    # Urutkan dari rasio spike terbesar
-    spikes.sort(key=lambda x: x.ratio, reverse=True)
+    # Urutkan dari skor confluence tertinggi, lalu rasio spike terbesar
+    spikes.sort(key=lambda x: (x.confluence.score, x.ratio), reverse=True)
     return spikes, len(targets), errors
 
 
@@ -323,12 +298,15 @@ def build_messages(spikes: list[Spike], scanned: int, errors: int) -> list[str]:
     """
     shown = spikes[:MAX_ALERTS]
     candle_time = local_time(shown[0].candle_open_time) if shown else local_time(int(time.time() * 1000))
+    hot = sum(1 for s in spikes if signals.is_hot(s.confluence, CONF))
 
     header = (
         f"🚨 <b>Volume Spike Binance ({html.escape(INTERVAL)})</b>\n"
         f"🕒 Candle: {html.escape(candle_time)}\n"
         f"⚙️ Ambang: ≥ {SPIKE_MULTIPLIER:g}x rata-rata {LOOKBACK} candle\n"
+        f"{html.escape(signals.confluence_legend(CONF))}\n"
         f"🔎 Discan: {scanned} pair | Spike: {len(spikes)}"
+        + (f" | 🔥 Confluence: {hot}" if hot else "")
         + (f" | Error: {errors}" if errors else "")
         + "\n"
     )
@@ -340,9 +318,11 @@ def build_messages(spikes: list[Spike], scanned: int, errors: int) -> list[str]:
     for i, s in enumerate(shown, 1):
         arrow = "🟢" if s.price_change_pct >= 0 else "🔴"
         link = f"https://www.binance.com/en/trade/{s.symbol[:-4]}_USDT?type=spot"
+        tag = f" <b>{signals.CONFLUENCE_TAG}</b>" if signals.is_hot(s.confluence, CONF) else ""
         blocks.append(
             f"{i}. {arrow} <a href=\"{link}\"><b>{html.escape(s.symbol)}</b></a> "
-            f"— <b>{s.ratio:.1f}x</b>\n"
+            f"— <b>{s.ratio:.1f}x</b>{tag}\n"
+            f"   {html.escape(signals.confluence_line(s.confluence))}\n"
             f"   Vol: {fmt_usd(s.quote_volume)} (avg {fmt_usd(s.avg_quote_volume)}) USDT\n"
             f"   Harga: {fmt_price(s.close_price)} ({s.price_change_pct:+.2f}%) | "
             f"24j: {fmt_usd(s.volume_24h)}\n"

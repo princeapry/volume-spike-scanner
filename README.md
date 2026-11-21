@@ -3,6 +3,8 @@
 Scanner otomatis yang memantau **semua pair USDT di Binance Spot**. Kalau volume sebuah pair naik tajam dibanding rata-rata beberapa candle terakhir, scanner mengirim notifikasi ke **Telegram**. Scanner dijalankan **tiap jam lewat GitHub Actions**, jadi tidak perlu server sendiri.
 
 > 🆕 Repo ini juga berisi scanner kedua, **Reversal Scanner** (`reversal_scanner.py`), untuk mendeteksi setup *bullish engulfing di support + volume* di timeframe 4 jam. Lihat bagian [🔄 Reversal Scanner](#-reversal-scanner-bullish-engulfing-di-support).
+>
+> ⭐ Setiap pair di alert kedua scanner sekarang punya **skor confluence 0–3**. Pair dengan skor ≥ 2 diberi tanda **🔥 CONFLUENCE**. Lihat bagian [⭐ Skor Confluence](#-skor-confluence).
 
 - Hanya pakai endpoint **publik** Binance, jadi **tidak perlu API key** akun Binance.
 - Gratis: GitHub Actions gratis tanpa batas menit untuk repo **public**. Repo private dapat 2.000 menit/bulan, dan scanner ini cuma butuh sekitar 1 menit per run (±720 menit/bulan).
@@ -25,7 +27,7 @@ Scanner otomatis yang memantau **semua pair USDT di Binance Spot**. Kalau volume
 5. Pair dianggap **spike** kalau:
    - `rasio >= SPIKE_MULTIPLIER`, **dan**
    - volume candle tersebut `>= MIN_CANDLE_QUOTE_VOLUME` USDT (supaya pair sepi yang naik dari 100 ke 500 USDT tidak ikut).
-6. Semua spike diurutkan dari rasio terbesar lalu dikirim ke Telegram.
+6. Tiap spike diberi [skor confluence](#-skor-confluence) 0–3. Semua spike diurutkan dari skor tertinggi, lalu rasio terbesar, kemudian dikirim ke Telegram.
 
 Contoh pesan:
 
@@ -33,15 +35,18 @@ Contoh pesan:
 🚨 Volume Spike Binance (1h)
 🕒 Candle: 19 Nov 2026 14:00 WIB
 ⚙️ Ambang: ≥ 3x rata-rata 20 candle
-🔎 Discan: 232 pair | Spike: 2
+⭐ Skor: Vol ≥ 3x avg 20 · Engulfing@support ≤ 2% · Buy ≥ 60% | 🔥 CONFLUENCE = skor ≥ 2
+🔎 Discan: 232 pair | Spike: 2 | 🔥 Confluence: 1
 
-1. 🟢 XYZUSDT — 8.4x
-   Vol: 2.31M (avg 275.10K) USDT
-   Harga: 0.4213 (+6.85%) | 24j: 9.80M
-
-2. 🔴 ABCUSDT — 3.6x
+1. 🟢 ABCUSDT — 3.6x 🔥 CONFLUENCE
+   ⭐⭐ 2/3 — Vol spike 3.6x · Buy 71%
    Vol: 812.40K (avg 225.67K) USDT
-   Harga: 1.2034 (-4.10%) | 24j: 4.12M
+   Harga: 1.2034 (+4.10%) | 24j: 4.12M
+
+2. 🔴 XYZUSDT — 8.4x
+   ⭐ 1/3 — Vol spike 8.4x
+   Vol: 2.31M (avg 275.10K) USDT
+   Harga: 0.4213 (-6.85%) | 24j: 9.80M
 ```
 
 🟢 berarti candle spike ditutup hijau (harga naik), 🔴 berarti ditutup merah. Nama pair di pesan bisa diklik dan langsung membuka halaman trading Binance.
@@ -54,6 +59,7 @@ Contoh pesan:
 volume-spike-scanner/
 ├── scanner.py                         # Scanner volume spike
 ├── reversal_scanner.py                # Scanner bullish engulfing di support
+├── signals.py                         # Logika deteksi sinyal + skor confluence (dipakai kedua scanner)
 ├── requirements.txt                   # Dependency Python
 ├── .github/workflows/volume-spike.yml # Jadwal volume spike (tiap jam)
 ├── .github/workflows/reversal.yml     # Jadwal reversal scanner (tiap 4 jam)
@@ -185,7 +191,7 @@ Dicek di candle terakhir yang **sudah close** (default 4h). Alert hanya dikirim 
 2. **Dekat support**: dicari *swing low* di `SWING_LOOKBACK` candle sebelum candle sekarang. Swing low = candle yang low-nya paling rendah dibanding `SWING_WINDOW` candle di kiri **dan** kanannya. Low candle sekarang harus berjarak ≤ `SUPPORT_DISTANCE_PCT` % (di atas maupun di bawah) dari salah satu swing low itu. Yang ditampilkan adalah swing low terdekat.
 3. **Konfirmasi volume**: volume candle sekarang (USDT) > `VOLUME_MULTIPLIER` × rata-rata `VOLUME_LOOKBACK` candle sebelumnya.
 
-Hasil diurutkan dari rasio volume terbesar. Kalau tidak ada setup, bot **tidak mengirim pesan**, kecuali `REVERSAL_SEND_IF_EMPTY=true`.
+Hasil diurutkan dari [skor confluence](#-skor-confluence) tertinggi, lalu rasio volume terbesar. Kalau tidak ada setup, bot **tidak mengirim pesan**, kecuali `REVERSAL_SEND_IF_EMPTY=true`.
 
 Contoh pesan:
 
@@ -193,9 +199,11 @@ Contoh pesan:
 🔄 Bullish Engulfing di Support (4h)
 🕒 Candle: 20 Nov 2026 15:00 WIB
 ⚙️ Support ≤ 2% dari swing low (30 candle, window 3) | Vol > 1.5x avg 20
-🔎 Discan: 240 pair | Setup: 1
+⭐ Skor: Vol ≥ 3x avg 20 · Engulfing@support ≤ 2% · Buy ≥ 60% | 🔥 CONFLUENCE = skor ≥ 2
+🔎 Discan: 240 pair | Setup: 1 | 🔥 Confluence: 1
 
-1. 🟢 KMNOUSDT — Vol 1.6x
+1. 🟢 KMNOUSDT — Vol 1.6x 🔥 CONFLUENCE
+   ⭐⭐ 2/3 — Engulfing@support (-1.6%) · Buy 64%
    Support: $0.02472 (low -1.62%)
    Harga: $0.02464 | 24j: 887.29K USDT
 ```
@@ -237,7 +245,43 @@ $env:REVERSAL_SEND_IF_EMPTY = "true"
 python reversal_scanner.py
 ```
 
-> `reversal_scanner.py` meng-import helper dari `scanner.py`, jadi kedua file harus berada di folder yang sama.
+> `reversal_scanner.py` meng-import helper dari `scanner.py` dan `signals.py`, jadi ketiga file harus berada di folder yang sama.
+
+---
+
+## ⭐ Skor Confluence
+
+Info tambahan di **setiap pair** yang muncul di alert, di **kedua** scanner. Skor ini **tidak mengubah trigger** masing-masing scanner (pair yang muncul tetap sama persis seperti sebelumnya), hanya menambah satu baris info dan mengubah urutan. Kedua scanner tetap jalan sendiri-sendiri dengan jadwalnya masing-masing.
+
+Pada candle yang sama dengan candle alert (1h untuk volume spike, 4h untuk reversal), dicek tiga syarat. Definisinya ada di `signals.py` dan dipakai bersama oleh kedua scanner:
+
+| Syarat | Nyala kalau |
+|---|---|
+| **Vol spike** | volume candle (USDT) ≥ `CONF_SPIKE_MULTIPLIER` × rata-rata `CONF_VOLUME_LOOKBACK` candle sebelumnya, **dan** ≥ `CONF_MIN_CANDLE_QUOTE_VOLUME` USDT |
+| **Engulfing@support** | candle bullish engulfing **dan** low-nya berjarak ≤ `CONF_SUPPORT_DISTANCE_PCT` % dari swing low terdekat (dicari di `CONF_SWING_LOOKBACK` candle sebelumnya, window `CONF_SWING_WINDOW`) |
+| **Buy** | buy pressure = taker buy quote volume ÷ total quote volume ≥ `CONF_BUY_PRESSURE_PCT` % |
+
+- Skor = jumlah syarat yang nyala (0–3), ditampilkan sebagai ⭐ per syarat, lengkap dengan nama syarat yang nyala (skor 0 ditampilkan `▫️ 0/3`).
+- Skor ≥ `CONF_MIN_SCORE` diberi tanda **🔥 CONFLUENCE** di baris nama pair, dan jumlahnya ditulis di header.
+- Alert diurutkan dari skor tertinggi. Kalau skornya sama, urutannya tetap seperti sebelumnya (rasio volume terbesar).
+- *Taker buy* = transaksi market buy (pembeli "makan" order jual). Buy pressure 60% artinya 60% nilai transaksi di candle itu adalah pembeli agresif.
+
+> Ambang skor sengaja punya variable sendiri (awalan `CONF_`), terpisah dari trigger. Jadi skornya punya arti yang sama di kedua scanner, dan tidak ikut berubah saat trigger diubah. Karena itu pair di volume spike scanner biasanya otomatis dapat ⭐ "Vol spike", dan pair di reversal scanner biasanya otomatis dapat ⭐ "Engulfing@support" (selama ambang `CONF_` tidak lebih ketat dari trigger-nya).
+
+### Pengaturan (GitHub Variables)
+
+Semua opsional, dan berlaku untuk **kedua** scanner (sudah dikirim di kedua workflow).
+
+| Variable                       | Default | Keterangan |
+|--------------------------------|---------|------------|
+| `CONF_SPIKE_MULTIPLIER`        | `3`     | Vol spike: volume ≥ N × rata-rata |
+| `CONF_VOLUME_LOOKBACK`         | `20`    | Vol spike: jumlah candle untuk rata-rata |
+| `CONF_MIN_CANDLE_QUOTE_VOLUME` | `50000` | Vol spike: volume candle minimal (USDT) |
+| `CONF_SWING_LOOKBACK`          | `30`    | Engulfing: jumlah candle untuk cari swing low |
+| `CONF_SWING_WINDOW`            | `3`     | Engulfing: jumlah candle kiri & kanan pembanding swing low |
+| `CONF_SUPPORT_DISTANCE_PCT`    | `2`     | Engulfing: jarak maksimal low ke swing low (%) |
+| `CONF_BUY_PRESSURE_PCT`        | `60`    | Buy pressure minimal, dalam persen (`60` = 60%) |
+| `CONF_MIN_SCORE`               | `2`     | Skor minimal untuk tanda 🔥 CONFLUENCE |
 
 ---
 
@@ -293,4 +337,4 @@ Mac/Linux: ganti `$env:NAMA = "nilai"` dengan `export NAMA="nilai"`.
 
 - Scanner mengecek **candle terakhir yang sudah close**. Candle yang masih berjalan diabaikan supaya hasilnya tidak berubah-ubah.
 - Satu run memakai sekitar 2 × jumlah pair *request weight* Binance. Untuk ±230 pair itu sekitar 500 dari batas 6.000/menit, jadi aman.
-- Volume spike dan pola bullish engulfing **bukan sinyal beli/jual**. Spike bisa terjadi karena pump, dump, listing baru, berita, atau whale. Selalu cek chart dan konteksnya sendiri sebelum mengambil keputusan. DYOR.
+- Volume spike, pola bullish engulfing, dan skor confluence **bukan sinyal beli/jual**. Spike bisa terjadi karena pump, dump, listing baru, berita, atau whale. Selalu cek chart dan konteksnya sendiri sebelum mengambil keputusan. DYOR.

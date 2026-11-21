@@ -47,4 +47,13 @@ jobs:
           SEND_IF_EMPTY: ${{ vars.SEND_IF_EMPTY }}
           TIMEZONE: ${{ vars.TIMEZONE }}
           BINANCE_BASE_URL: ${{ vars.BINANCE_BASE_URL }}
+          # Ambang skor confluence (sama untuk kedua scanner, kosong = default)
+          CONF_SPIKE_MULTIPLIER: ${{ vars.CONF_SPIKE_MULTIPLIER }}
+          CONF_VOLUME_LOOKBACK: ${{ vars.CONF_VOLUME_LOOKBACK }}
+          CONF_MIN_CANDLE_QUOTE_VOLUME: ${{ vars.CONF_MIN_CANDLE_QUOTE_VOLUME }}
+          CONF_SWING_LOOKBACK: ${{ vars.CONF_SWING_LOOKBACK }}
+          CONF_SWING_WINDOW: ${{ vars.CONF_SWING_WINDOW }}
+          CONF_SUPPORT_DISTANCE_PCT: ${{ vars.CONF_SUPPORT_DISTANCE_PCT }}
+          CONF_BUY_PRESSURE_PCT: ${{ vars.CONF_BUY_PRESSURE_PCT }}
+          CONF_MIN_SCORE: ${{ vars.CONF_MIN_SCORE }}
         run: python scanner.py
