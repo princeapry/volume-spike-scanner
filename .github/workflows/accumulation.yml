@@ -51,6 +51,7 @@ jobs:
           ACCUM_MAX_ALERTS: ${{ vars.ACCUM_MAX_ALERTS }}
           ACCUM_SEND_IF_EMPTY: ${{ vars.ACCUM_SEND_IF_EMPTY }}
           ACCUM_EXTRA_BLOCKLIST: ${{ vars.ACCUM_EXTRA_BLOCKLIST }}
+          COMPRESS_RATIO: ${{ vars.COMPRESS_RATIO }}
           # Pengaturan bersama dengan scanner lain (universe pair & tampilan)
           MIN_24H_QUOTE_VOLUME: ${{ vars.MIN_24H_QUOTE_VOLUME }}
           MAX_ALERTS: ${{ vars.MAX_ALERTS }}

@@ -310,30 +310,48 @@ Dicek pada candle yang **sudah close** (default 4h). Alert hanya dikirim kalau *
 2. **Volume naik**: `ACCUM_WINDOW` candle itu dibagi 2 paruh sama panjang. Rata-rata volume (USDT) paruh terbaru harus `≥ ACCUM_VOL_RISE_FACTOR` × rata-rata paruh lama.
 3. **Dekat base**: dari `ACCUM_BASE_LOOKBACK` candle terakhir (default 180 = 30 hari), posisi harga close sekarang di range high–low itu harus `≤ ACCUM_MAX_POSITION`. Posisi `0` = tepat di low terendah, `1` = tepat di high tertinggi.
 
-Pair yang candle-nya belum cukup (misal baru listing kurang dari 30 hari) dilewati. Hasil diurutkan dari rasio kenaikan volume tertinggi. Kalau tidak ada pair yang lolos, bot **tidak mengirim pesan**, kecuali `ACCUM_SEND_IF_EMPTY=true` (atau `SEND_IF_EMPTY=true`).
+Pair yang candle-nya belum cukup (misal baru listing kurang dari 30 hari) dilewati. Kalau tidak ada pair yang lolos, bot **tidak mengirim pesan**, kecuali `ACCUM_SEND_IF_EMPTY=true` (atau `SEND_IF_EMPTY=true`).
+
+### Skor kompresi (⭐ / ⭐⭐)
+
+Setiap pair yang **sudah lolos** ketiga syarat di atas diberi skor. Skor ini **bukan syarat wajib**: pair tanpa kompresi tetap dikirim.
+
+- **Kompresi** = volatilitas **menyempit**. Bedanya dengan "flat": flat melihat rentang harga *total* selama window, sedangkan kompresi melihat apakah ukuran candle *makin lama makin kecil* (coil ngencang).
+- Cara hitung: `ACCUM_WINDOW` candle dibagi 2 paruh. Di tiap paruh dihitung rata-rata `(high − low) ÷ close` per candle. Pair dianggap mengkompresi kalau rata-rata paruh **terbaru** `≤ COMPRESS_RATIO` × rata-rata paruh **lama**. Definisinya ada di `signals.check_compression()`.
+
+| Skor | Arti |
+|---|---|
+| ⭐ 1/2 | akumulasi saja |
+| ⭐⭐ 2/2 | akumulasi + kompresi, dengan catatan **"coil ngencang"** |
+
+Hasil diurutkan: ⭐⭐ di atas, lalu rasio kenaikan volume tertinggi. Rasio volatilitas (paruh terbaru ÷ paruh lama) selalu ditampilkan, walaupun kompresinya tidak nyala.
 
 Contoh pesan:
 
 ```
 🟢 AKUMULASI Binance (4h)
-🕒 Candle: 21 Nov 2026 11:00 WIB
+🕒 Candle: 21 Nov 2026 15:00 WIB
 ⚙️ Flat ≤ 20% (42 candle / 7 hari) | Vol naik ≥ 1.3x | Posisi ≤ 60% range 30 hari
-🔎 Discan: 249 pair | Akumulasi: 2
+⭐ Skor: ⭐ akumulasi | ⭐⭐ + kompresi (volatilitas ≤ 0.7x paruh lama)
+🔎 Discan: 245 pair | Akumulasi: 2 | ⭐⭐: 1
 
-1. 🟢 AKUMULASI HYPERUSDT — Vol 2.60x
-   Rentang: 13.7% | Posisi range 30 hari: 9%
-   Range 30 hari: $0.0394 – $0.07
-   Harga: $0.0423 | 24j: 1.45M USDT
-
-2. 🟢 AKUMULASI SUSHIUSDT — Vol 1.59x
-   Rentang: 19.9% | Posisi range 30 hari: 7%
+1. 🟢 AKUMULASI SUSHIUSDT — Vol 1.70x
+   ⭐⭐ 2/2 — coil ngencang (volatilitas 0.62x)
+   Rentang: 18.2% | Posisi range 30 hari: 8%
    Range 30 hari: $0.137 – $0.2193
-   Harga: $0.1424 | 24j: 941.35K USDT
+   Harga: $0.1433 | 24j: 943.99K USDT
+
+2. 🟢 AKUMULASI HYPERUSDT — Vol 2.76x
+   ⭐ 1/2 — akumulasi (volatilitas 1.27x)
+   Rentang: 12.2% | Posisi range 30 hari: 7%
+   Range 30 hari: $0.0394 – $0.07
+   Harga: $0.0416 | 24j: 1.23M USDT
 ```
 
-- **Vol 2.60x**: rata-rata volume paruh terbaru 2,6× paruh lama.
-- **Rentang 13.7%**: selama 7 hari terakhir harga hanya bergerak dalam rentang 13,7%.
-- **Posisi range 30 hari 9%**: harga sekarang ada di 9% bagian bawah range 30 hari.
+- **Vol 2.76x**: rata-rata volume paruh terbaru 2,76× paruh lama.
+- **volatilitas 0.62x**: ukuran candle rata-rata paruh terbaru tinggal 62% dari paruh lama (menyempit). Angka di atas 1 berarti justru melebar.
+- **Rentang 18.2%**: selama 7 hari terakhir harga hanya bergerak dalam rentang 18,2%.
+- **Posisi range 30 hari 8%**: harga sekarang ada di 8% bagian bawah range 30 hari.
 
 ### Jadwal
 
@@ -356,6 +374,7 @@ Semua opsional.
 | `ACCUM_MAX_ALERTS`      | ikut `MAX_ALERTS` (`30`) | Maksimal pair per notifikasi |
 | `ACCUM_SEND_IF_EMPTY`   | ikut `SEND_IF_EMPTY` (`false`) | `true` = tetap kirim pesan walau tidak ada pair |
 | `ACCUM_EXTRA_BLOCKLIST` | (kosong) | Base asset tambahan yang diblokir, dipisah koma (misal `NEWSTOCKB,KAU`) |
+| `COMPRESS_RATIO`        | `0.7`   | Skor ⭐⭐: volatilitas paruh terbaru harus ≤ N × paruh lama (makin kecil makin ketat) |
 
 Variable bersama yang juga dipakai: `MIN_24H_QUOTE_VOLUME`, `TIMEZONE`, `BINANCE_BASE_URL`. `DRY_RUN`, `EXCLUDE_STABLES`, `EXCLUDE_LEVERAGED`, `MAX_WORKERS` juga berlaku.
 

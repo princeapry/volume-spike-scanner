@@ -14,7 +14,12 @@ Cara kerja singkat:
       terbaru >= ACCUM_VOL_RISE_FACTOR x rata-rata paruh lama.
    c. Dekat base: posisi close terakhir di range high-low ACCUM_BASE_LOOKBACK
       candle terakhir <= ACCUM_MAX_POSITION (0 = di low, 1 = di high).
-3. Urutkan dari rasio kenaikan volume tertinggi, lalu kirim ke Telegram.
+3. Untuk tiap pair yang lolos, hitung skor 1-2 (info tambahan, BUKAN syarat):
+   ⭐ 1/2 = akumulasi saja, ⭐⭐ 2/2 = akumulasi + kompresi (volatilitas
+   menyempit: rata-rata (high-low)/close paruh terbaru <= COMPRESS_RATIO x
+   paruh lama). Definisi kompresi di signals.check_compression.
+4. Urutkan ⭐⭐ di atas, lalu rasio kenaikan volume tertinggi, lalu kirim
+   ke Telegram.
 
 Scanner ini berdiri sendiri (jadwal & workflow sendiri). Helper umum (request
 Binance, daftar pair, format angka, kirim Telegram) di-import dari scanner.py
@@ -46,6 +51,8 @@ MAX_RANGE_PCT = _env_float("ACCUM_MAX_RANGE_PCT", 20.0)         # rentang harga 
 VOL_RISE_FACTOR = _env_float("ACCUM_VOL_RISE_FACTOR", 1.3)      # volume paruh baru >= N x paruh lama
 BASE_LOOKBACK = _env_int("ACCUM_BASE_LOOKBACK", 180)            # candle untuk range base (180 x 4h = 30 hari)
 MAX_POSITION = _env_float("ACCUM_MAX_POSITION", 0.6)            # posisi maks di range base (0..1)
+# Skor kompresi: volatilitas paruh terbaru WINDOW harus <= N x paruh lama
+COMPRESS_RATIO = _env_float("COMPRESS_RATIO", 0.7)
 MAX_ALERTS = _env_int("ACCUM_MAX_ALERTS", base.MAX_ALERTS)      # maks pair per notifikasi
 # ACCUM_SEND_IF_EMPTY lebih diutamakan; kalau kosong ikut SEND_IF_EMPTY
 SEND_IF_EMPTY = _env_bool("ACCUM_SEND_IF_EMPTY", base.SEND_IF_EMPTY)
@@ -144,6 +151,21 @@ class Setup:
     close_price: float
     candle_open_time: int   # timestamp ms open candle close terakhir
     volume_24h: float
+    volatility_ratio: float | None  # volatilitas paruh terbaru / paruh lama (info)
+    compressed: bool                # True kalau volatility_ratio <= COMPRESS_RATIO
+
+    @property
+    def score(self) -> int:
+        """1 = akumulasi saja, 2 = akumulasi + kompresi."""
+        return 2 if self.compressed else 1
+
+
+def score_line(s: Setup) -> str:
+    """Baris skor untuk alert, contoh: '⭐⭐ 2/2 — coil ngencang (volatilitas 0.62x)'."""
+    stars = "⭐" * s.score
+    note = "coil ngencang" if s.compressed else "akumulasi"
+    vol = f" (volatilitas {s.volatility_ratio:.2f}x)" if s.volatility_ratio is not None else ""
+    return f"{stars} {s.score}/2 — {note}{vol}"
 
 
 def check_symbol(symbol: str, volume_24h: float) -> Setup | None:
@@ -162,6 +184,12 @@ def check_symbol(symbol: str, volume_24h: float) -> Setup | None:
     if found is None:
         return None
 
+    # Skor kompresi (info tambahan, tidak menggugurkan alert). Rasio tetap
+    # dihitung walau tidak nyala, supaya bisa ditampilkan di alert.
+    window = closed[-WINDOW:]
+    vol_ratio = signals.compression_ratio(window)
+    compressed = signals.check_compression(window, COMPRESS_RATIO) is not None
+
     cur = closed[-1]
     return Setup(
         symbol=symbol,
@@ -169,6 +197,8 @@ def check_symbol(symbol: str, volume_24h: float) -> Setup | None:
         close_price=float(cur[signals.K_CLOSE]),
         candle_open_time=int(cur[signals.K_OPEN_TIME]),
         volume_24h=volume_24h,
+        volatility_ratio=vol_ratio,
+        compressed=compressed,
     )
 
 
@@ -203,8 +233,8 @@ def scan() -> tuple[list[Setup], int, int]:
                 errors += 1
                 print(f"[WARN] {symbol}: {exc}")
 
-    # Urutkan dari rasio kenaikan volume tertinggi
-    setups.sort(key=lambda x: x.signal.volume_rise, reverse=True)
+    # Urutkan ⭐⭐ (kompresi) di atas, lalu rasio kenaikan volume tertinggi
+    setups.sort(key=lambda x: (x.score, x.signal.volume_rise), reverse=True)
     return setups, len(targets), errors
 
 
@@ -219,6 +249,7 @@ def build_messages(setups: list[Setup], scanned: int, errors: int) -> list[str]:
         shown[0].candle_open_time if shown else int(time.time() * 1000)
     )
     base_span = span_label(BASE_LOOKBACK)
+    coiled = sum(1 for s in setups if s.compressed)
 
     header = (
         f"{LABEL} <b>Binance ({html.escape(INTERVAL)})</b>\n"
@@ -226,7 +257,9 @@ def build_messages(setups: list[Setup], scanned: int, errors: int) -> list[str]:
         f"⚙️ Flat ≤ {MAX_RANGE_PCT:g}% ({WINDOW} candle / {span_label(WINDOW)}) | "
         f"Vol naik ≥ {VOL_RISE_FACTOR:g}x | "
         f"Posisi ≤ {MAX_POSITION * 100:g}% range {base_span}\n"
+        f"⭐ Skor: ⭐ akumulasi | ⭐⭐ + kompresi (volatilitas ≤ {COMPRESS_RATIO:g}x paruh lama)\n"
         f"🔎 Discan: {scanned} pair | Akumulasi: {len(setups)}"
+        + (f" | ⭐⭐: {coiled}" if coiled else "")
         + (f" | Error: {errors}" if errors else "")
         + "\n"
     )
@@ -241,6 +274,7 @@ def build_messages(setups: list[Setup], scanned: int, errors: int) -> list[str]:
         blocks.append(
             f"{i}. {LABEL} <a href=\"{link}\"><b>{html.escape(s.symbol)}</b></a> "
             f"— Vol <b>{a.volume_rise:.2f}x</b>\n"
+            f"   {html.escape(score_line(s))}\n"
             f"   Rentang: {a.range_pct:.1f}% | Posisi range {base_span}: "
             f"{a.position * 100:.0f}%\n"
             f"   Range {base_span}: ${base.fmt_price(a.base_low)} – ${base.fmt_price(a.base_high)}\n"

@@ -446,3 +446,47 @@ def check_accumulation(
         base_low=base_low,
         base_high=base_high,
     )
+
+
+# ---------------------------------------------------------------------------
+# Sinyal 5: Kompresi (volatilitas menyempit)
+# ---------------------------------------------------------------------------
+# Beda dengan "flat": flat melihat rentang harga TOTAL di window, sedangkan
+# kompresi melihat apakah ukuran candle makin lama makin KECIL (coil ngencang).
+# Dipakai accumulation_scanner.py sebagai skor tambahan, bukan syarat wajib.
+
+def avg_relative_range(candles: list) -> float | None:
+    """Rata-rata (high - low) / close per candle. Candle dengan close <= 0 dilewati."""
+    values = [
+        (float(k[K_HIGH]) - float(k[K_LOW])) / float(k[K_CLOSE])
+        for k in candles
+        if float(k[K_CLOSE]) > 0
+    ]
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def compression_ratio(candles: list) -> float | None:
+    """
+    Bagi candle jadi 2 paruh sama panjang, lalu hitung
+    rata-rata range relatif paruh TERBARU / rata-rata paruh LAMA.
+    < 1 berarti volatilitas menyempit. Kalau jumlah candle ganjil,
+    candle paling lama dibuang supaya paruhnya sama.
+    """
+    half = len(candles) // 2
+    if half == 0:
+        return None
+    old = avg_relative_range(candles[-2 * half:-half])
+    new = avg_relative_range(candles[-half:])
+    if old is None or new is None or old <= 0:
+        return None
+    return new / old
+
+
+def check_compression(candles: list, max_ratio: float) -> float | None:
+    """Kompresi = compression_ratio <= `max_ratio`. Return rasionya kalau nyala."""
+    ratio = compression_ratio(candles)
+    if ratio is None or ratio > max_ratio:
+        return None
+    return ratio
