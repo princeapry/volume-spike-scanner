@@ -312,19 +312,27 @@ Dicek pada candle yang **sudah close** (default 4h). Alert hanya dikirim kalau *
 
 Pair yang candle-nya belum cukup (misal baru listing kurang dari 30 hari) dilewati. Kalau tidak ada pair yang lolos, bot **tidak mengirim pesan**, kecuali `ACCUM_SEND_IF_EMPTY=true` (atau `SEND_IF_EMPTY=true`).
 
-### Skor kompresi (⭐ / ⭐⭐)
+### Skor /3: akumulasi + kompresi + OI
 
-Setiap pair yang **sudah lolos** ketiga syarat di atas diberi skor. Skor ini **bukan syarat wajib**: pair tanpa kompresi tetap dikirim.
+Setiap pair yang **sudah lolos** ketiga syarat di atas diberi skor 1–3, satu ⭐ per faktor yang nyala. Skor ini **bukan syarat wajib**: pair dengan skor 1 tetap dikirim. Hasil diurutkan dari skor tertinggi, lalu rasio kenaikan volume tertinggi.
 
-- **Kompresi** = volatilitas **menyempit**. Bedanya dengan "flat": flat melihat rentang harga *total* selama window, sedangkan kompresi melihat apakah ukuran candle *makin lama makin kecil* (coil ngencang).
-- Cara hitung: `ACCUM_WINDOW` candle dibagi 2 paruh. Di tiap paruh dihitung rata-rata `(high − low) ÷ close` per candle. Pair dianggap mengkompresi kalau rata-rata paruh **terbaru** `≤ COMPRESS_RATIO` × rata-rata paruh **lama**. Definisinya ada di `signals.check_compression()`.
-
-| Skor | Arti |
+| Faktor | Nyala kalau |
 |---|---|
-| ⭐ 1/2 | akumulasi saja |
-| ⭐⭐ 2/2 | akumulasi + kompresi, dengan catatan **"coil ngencang"** |
+| ⭐ **Akumulasi** | selalu nyala (syarat inti di atas sudah lolos) |
+| ⭐ **Kompresi** (coil ngencang) | volatilitas menyempit: `ACCUM_WINDOW` candle dibagi 2 paruh, rata-rata `(high − low) ÷ close` per candle di paruh **terbaru** `≤ COMPRESS_RATIO` × paruh **lama**. Definisi: `signals.check_compression()` |
+| ⭐ **OI building** | dari Binance Futures: Open Interest terbaru `≥ OI_RISE_FACTOR` × OI di awal window, **dan** funding rate terakhir `≤ FUNDING_MAX`. Definisi: `signals.check_oi_building()` |
 
-Hasil diurutkan: ⭐⭐ di atas, lalu rasio kenaikan volume tertinggi. Rasio volatilitas (paruh terbaru ÷ paruh lama) selalu ditampilkan, walaupun kompresinya tidak nyala.
+**Kompresi vs flat**: flat melihat rentang harga *total* selama window, sedangkan kompresi melihat apakah ukuran candle *makin lama makin kecil*.
+
+**Detail faktor OI:**
+- Riwayat OI diambil dari endpoint `openInterestHist` (period `ACCUM_INTERVAL`, `ACCUM_WINDOW` titik = 42 × 4h = 7 hari), memakai OI dalam **jumlah kontrak** supaya tidak ikut naik-turun karena harga.
+- Funding rate yang dipakai adalah funding terakhir yang sudah dibayar (`/fapi/v1/fundingRate`). Funding negatif dianggap sehat.
+- **Hanya dicek untuk pair yang sudah lolos syarat inti**, jadi request ke Futures API cuma beberapa per run.
+- Simbol perp dicocokkan otomatis, termasuk koin yang di futures pakai awalan `1000` (spot `PEPEUSDT` → perp `1000PEPEUSDT`).
+- Pair yang **tidak punya perpetual futures** tidak dapat ⭐ OI dan ditandai `OI: tidak ada perp`. Ini tidak dihitung error.
+- Kalau Futures API tidak bisa diakses, semua pair tetap dikirim tanpa ⭐ OI, dan header pesan menampilkan `⚠️ Data futures tidak tersedia`.
+
+> ⚠️ **Catatan GitHub Actions:** `fapi.binance.com` memblokir IP Amerika Serikat (HTTP 451), dan runner GitHub Actions umumnya ada di AS. Berbeda dengan data spot, Binance tidak menyediakan mirror publik untuk data futures. Jadi saat jalan di GitHub Actions, faktor OI kemungkinan besar **selalu dilewati** (skor maksimal efektif 2/3). Scanner tetap jalan normal. Dari komputer di Indonesia/Asia faktor OI berfungsi. Kalau punya proxy/server sendiri di luar AS, arahkan lewat variable `FUTURES_BASE_URL`.
 
 Contoh pesan:
 
@@ -332,26 +340,30 @@ Contoh pesan:
 🟢 AKUMULASI Binance (4h)
 🕒 Candle: 21 Nov 2026 15:00 WIB
 ⚙️ Flat ≤ 20% (42 candle / 7 hari) | Vol naik ≥ 1.3x | Posisi ≤ 60% range 30 hari
-⭐ Skor: ⭐ akumulasi | ⭐⭐ + kompresi (volatilitas ≤ 0.7x paruh lama)
-🔎 Discan: 245 pair | Akumulasi: 2 | ⭐⭐: 1
+⭐ Skor /3: akumulasi + kompresi (volatilitas ≤ 0.7x) + OI (≥ 1.2x & funding ≤ 0.03%)
+🔎 Discan: 246 pair | Akumulasi: 2 | ⭐⭐+: 1
 
 1. 🟢 AKUMULASI SUSHIUSDT — Vol 1.70x
-   ⭐⭐ 2/2 — coil ngencang (volatilitas 0.62x)
+   ⭐⭐⭐ 3/3 — akumulasi · kompresi (coil ngencang) · OI building
+   Volatilitas: 0.62x | OI 7 hari: +35% | Funding: +0.0100%
    Rentang: 18.2% | Posisi range 30 hari: 8%
    Range 30 hari: $0.137 – $0.2193
-   Harga: $0.1433 | 24j: 943.99K USDT
+   Harga: $0.1433 | 24j: 948.77K USDT
 
 2. 🟢 AKUMULASI HYPERUSDT — Vol 2.76x
-   ⭐ 1/2 — akumulasi (volatilitas 1.27x)
+   ⭐ 1/3 — akumulasi
+   Volatilitas: 1.27x | OI 7 hari: -7% | Funding: -0.0180%
    Rentang: 12.2% | Posisi range 30 hari: 7%
    Range 30 hari: $0.0394 – $0.07
-   Harga: $0.0416 | 24j: 1.23M USDT
+   Harga: $0.0416 | 24j: 1.18M USDT
 ```
 
-- **Vol 2.76x**: rata-rata volume paruh terbaru 2,76× paruh lama.
-- **volatilitas 0.62x**: ukuran candle rata-rata paruh terbaru tinggal 62% dari paruh lama (menyempit). Angka di atas 1 berarti justru melebar.
+- **Vol 1.70x**: rata-rata volume paruh terbaru 1,7× paruh lama.
+- **Volatilitas 0.62x**: ukuran candle rata-rata paruh terbaru tinggal 62% dari paruh lama (menyempit). Di atas 1 berarti justru melebar.
+- **OI 7 hari +35%**: open interest naik 35% dibanding 7 hari lalu. **Funding +0.0100%**: funding terakhir 0,01% (masih di bawah batas 0,03%).
 - **Rentang 18.2%**: selama 7 hari terakhir harga hanya bergerak dalam rentang 18,2%.
 - **Posisi range 30 hari 8%**: harga sekarang ada di 8% bagian bawah range 30 hari.
+- Baris "Volatilitas | OI | Funding" selalu ditampilkan, walaupun faktornya tidak nyala.
 
 ### Jadwal
 
@@ -374,7 +386,10 @@ Semua opsional.
 | `ACCUM_MAX_ALERTS`      | ikut `MAX_ALERTS` (`30`) | Maksimal pair per notifikasi |
 | `ACCUM_SEND_IF_EMPTY`   | ikut `SEND_IF_EMPTY` (`false`) | `true` = tetap kirim pesan walau tidak ada pair |
 | `ACCUM_EXTRA_BLOCKLIST` | (kosong) | Base asset tambahan yang diblokir, dipisah koma (misal `NEWSTOCKB,KAU`) |
-| `COMPRESS_RATIO`        | `0.7`   | Skor ⭐⭐: volatilitas paruh terbaru harus ≤ N × paruh lama (makin kecil makin ketat) |
+| `COMPRESS_RATIO`        | `0.7`   | Skor kompresi: volatilitas paruh terbaru harus ≤ N × paruh lama (makin kecil makin ketat) |
+| `OI_RISE_FACTOR`        | `1.2`   | Skor OI: OI terbaru harus ≥ N × OI di awal window |
+| `FUNDING_MAX`           | `0.0003` | Skor OI: funding rate terakhir harus ≤ nilai ini (`0.0003` = 0,03%) |
+| `FUTURES_BASE_URL`      | `https://fapi.binance.com` | Base URL Binance Futures (untuk proxy, lihat catatan GitHub Actions) |
 
 Variable bersama yang juga dipakai: `MIN_24H_QUOTE_VOLUME`, `TIMEZONE`, `BINANCE_BASE_URL`. `DRY_RUN`, `EXCLUDE_STABLES`, `EXCLUDE_LEVERAGED`, `MAX_WORKERS` juga berlaku.
 

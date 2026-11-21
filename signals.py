@@ -490,3 +490,54 @@ def check_compression(candles: list, max_ratio: float) -> float | None:
     if ratio is None or ratio > max_ratio:
         return None
     return ratio
+
+
+# ---------------------------------------------------------------------------
+# Sinyal 6: OI building (Open Interest naik + funding sehat)
+# ---------------------------------------------------------------------------
+# Data diambil dari Binance Futures oleh accumulation_scanner.py. Fungsi di
+# sini hanya menilai datanya (fungsi murni, tanpa request internet).
+# Dipakai accumulation_scanner.py sebagai skor tambahan, bukan syarat wajib.
+
+@dataclass
+class OpenInterestSignal:
+    """Hasil penilaian OI building untuk satu pair."""
+    oi_ratio: float        # OI terbaru / OI di awal window
+    funding_rate: float    # funding rate terakhir (0.0001 = 0.01%)
+    oi_building: bool      # oi_ratio >= ambang
+    funding_healthy: bool  # funding_rate <= ambang
+
+    @property
+    def ok(self) -> bool:
+        """Nyala kalau OI building DAN funding sehat."""
+        return self.oi_building and self.funding_healthy
+
+
+def oi_rise_ratio(oi_values: list[float]) -> float | None:
+    """OI terbaru / OI paling awal di daftar (urut lama -> baru). None kalau data kurang."""
+    if len(oi_values) < 2 or oi_values[0] <= 0:
+        return None
+    return oi_values[-1] / oi_values[0]
+
+
+def check_oi_building(
+    oi_values: list[float],
+    funding_rate: float,
+    oi_rise_factor: float,
+    funding_max: float,
+) -> OpenInterestSignal | None:
+    """
+    OI building = OI terbaru >= `oi_rise_factor` x OI di awal window, DAN
+    funding rate terakhir <= `funding_max` (posisi long belum kepenuhan /
+    belum terlalu mahal). Funding negatif juga dianggap sehat.
+    Return None kalau data OI tidak cukup untuk dinilai.
+    """
+    ratio = oi_rise_ratio(oi_values)
+    if ratio is None:
+        return None
+    return OpenInterestSignal(
+        oi_ratio=ratio,
+        funding_rate=funding_rate,
+        oi_building=ratio >= oi_rise_factor,
+        funding_healthy=funding_rate <= funding_max,
+    )

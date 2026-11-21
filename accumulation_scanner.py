@@ -14,12 +14,17 @@ Cara kerja singkat:
       terbaru >= ACCUM_VOL_RISE_FACTOR x rata-rata paruh lama.
    c. Dekat base: posisi close terakhir di range high-low ACCUM_BASE_LOOKBACK
       candle terakhir <= ACCUM_MAX_POSITION (0 = di low, 1 = di high).
-3. Untuk tiap pair yang lolos, hitung skor 1-2 (info tambahan, BUKAN syarat):
-   ⭐ 1/2 = akumulasi saja, ⭐⭐ 2/2 = akumulasi + kompresi (volatilitas
-   menyempit: rata-rata (high-low)/close paruh terbaru <= COMPRESS_RATIO x
-   paruh lama). Definisi kompresi di signals.check_compression.
-4. Urutkan ⭐⭐ di atas, lalu rasio kenaikan volume tertinggi, lalu kirim
-   ke Telegram.
+3. Untuk tiap pair yang lolos, hitung skor 1-3 (info tambahan, BUKAN syarat).
+   Satu ⭐ per faktor yang nyala:
+   - Akumulasi (selalu nyala, karena syarat inti sudah lolos).
+   - Kompresi: volatilitas menyempit, rata-rata (high-low)/close paruh
+     terbaru <= COMPRESS_RATIO x paruh lama (signals.check_compression).
+   - OI building: dari Binance Futures, OI terbaru >= OI_RISE_FACTOR x OI di
+     awal window DAN funding rate terakhir <= FUNDING_MAX
+     (signals.check_oi_building). Hanya dicek untuk pair yang SUDAH lolos
+     syarat inti (hemat API). Pair tanpa perpetual futures dilewati.
+4. Urutkan dari skor tertinggi, lalu rasio kenaikan volume tertinggi, lalu
+   kirim ke Telegram.
 
 Scanner ini berdiri sendiri (jadwal & workflow sendiri). Helper umum (request
 Binance, daftar pair, format angka, kirim Telegram) di-import dari scanner.py
@@ -34,6 +39,8 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+
+import requests
 
 import scanner as base  # helper bersama; aman di-import karena main() tidak ikut jalan
 import signals
@@ -53,6 +60,12 @@ BASE_LOOKBACK = _env_int("ACCUM_BASE_LOOKBACK", 180)            # candle untuk r
 MAX_POSITION = _env_float("ACCUM_MAX_POSITION", 0.6)            # posisi maks di range base (0..1)
 # Skor kompresi: volatilitas paruh terbaru WINDOW harus <= N x paruh lama
 COMPRESS_RATIO = _env_float("COMPRESS_RATIO", 0.7)
+# Skor OI building (Binance Futures): OI terbaru >= N x OI awal window
+# (jumlah titik OI = ACCUM_WINDOW, period = ACCUM_INTERVAL) DAN funding
+# rate terakhir <= FUNDING_MAX (0.0003 = 0.03%)
+OI_RISE_FACTOR = _env_float("OI_RISE_FACTOR", 1.2)
+FUNDING_MAX = _env_float("FUNDING_MAX", 0.0003)
+FUTURES_BASE_URL = _env_str("FUTURES_BASE_URL", "https://fapi.binance.com").rstrip("/")
 MAX_ALERTS = _env_int("ACCUM_MAX_ALERTS", base.MAX_ALERTS)      # maks pair per notifikasi
 # ACCUM_SEND_IF_EMPTY lebih diutamakan; kalau kosong ikut SEND_IF_EMPTY
 SEND_IF_EMPTY = _env_bool("ACCUM_SEND_IF_EMPTY", base.SEND_IF_EMPTY)
@@ -153,19 +166,148 @@ class Setup:
     volume_24h: float
     volatility_ratio: float | None  # volatilitas paruh terbaru / paruh lama (info)
     compressed: bool                # True kalau volatility_ratio <= COMPRESS_RATIO
+    # Faktor OI (diisi setelah scan inti). Status:
+    # "ok" = data ada, "no_perp" = tidak punya perpetual futures,
+    # "unavailable" = data futures gagal diambil
+    oi: signals.OpenInterestSignal | None = None
+    futures_status: str = "unavailable"
+
+    @property
+    def oi_ok(self) -> bool:
+        return self.oi is not None and self.oi.ok
 
     @property
     def score(self) -> int:
-        """1 = akumulasi saja, 2 = akumulasi + kompresi."""
-        return 2 if self.compressed else 1
+        """1 (akumulasi) + 1 kalau kompresi + 1 kalau OI building."""
+        return 1 + int(self.compressed) + int(self.oi_ok)
 
 
 def score_line(s: Setup) -> str:
-    """Baris skor untuk alert, contoh: '⭐⭐ 2/2 — coil ngencang (volatilitas 0.62x)'."""
-    stars = "⭐" * s.score
-    note = "coil ngencang" if s.compressed else "akumulasi"
-    vol = f" (volatilitas {s.volatility_ratio:.2f}x)" if s.volatility_ratio is not None else ""
-    return f"{stars} {s.score}/2 — {note}{vol}"
+    """Baris skor + faktor yang nyala, contoh:
+    '⭐⭐⭐ 3/3 — akumulasi · kompresi (coil ngencang) · OI building'."""
+    factors = ["akumulasi"]
+    if s.compressed:
+        factors.append("kompresi (coil ngencang)")
+    if s.oi_ok:
+        factors.append("OI building")
+    return f"{'⭐' * s.score} {s.score}/3 — {' · '.join(factors)}"
+
+
+def detail_line(s: Setup) -> str:
+    """Angka di balik skor (selalu tampil, walau faktornya tidak nyala)."""
+    vol = f"{s.volatility_ratio:.2f}x" if s.volatility_ratio is not None else "-"
+    if s.oi is not None:
+        oi = (f"OI {span_label(WINDOW)}: {(s.oi.oi_ratio - 1) * 100:+.0f}% | "
+              f"Funding: {s.oi.funding_rate * 100:+.4f}%")
+    elif s.futures_status == "no_perp":
+        oi = "OI: tidak ada perp"
+    else:
+        oi = "OI: data futures tidak tersedia"
+    return f"Volatilitas: {vol} | {oi}"
+
+
+# ---------------------------------------------------------------------------
+# Data Binance Futures (Open Interest & funding rate)
+# ---------------------------------------------------------------------------
+
+class FuturesBlocked(RuntimeError):
+    """API futures menolak akses (misal HTTP 451 karena lokasi IP)."""
+
+
+def futures_get(path: str, params: dict | None = None):
+    """GET ke endpoint publik Binance Futures dengan retry sederhana.
+    Raise FuturesBlocked kalau diblokir (403/451), RuntimeError kalau gagal."""
+    url = f"{FUTURES_BASE_URL}{path}"
+    last_error: Exception | None = None
+    for attempt in range(1, base.MAX_RETRIES + 1):
+        try:
+            resp = base.session.get(url, params=params, timeout=base.REQUEST_TIMEOUT)
+            # Rate limit: hormati Retry-After supaya IP tidak di-ban
+            if resp.status_code in (418, 429):
+                time.sleep(int(resp.headers.get("Retry-After", "10")))
+                continue
+            if resp.status_code in (403, 451):
+                raise FuturesBlocked(f"{url} -> HTTP {resp.status_code} (diblokir)")
+            if resp.status_code >= 500:
+                raise requests.HTTPError(f"HTTP {resp.status_code}")
+            resp.raise_for_status()
+            return resp.json()
+        except FuturesBlocked:
+            raise
+        except (requests.RequestException, ValueError) as exc:
+            last_error = exc
+            time.sleep(min(2 ** attempt, 15))
+    raise RuntimeError(f"Gagal request ke Binance Futures {path}: {last_error}")
+
+
+def get_perp_symbols() -> set[str] | None:
+    """Semua simbol perpetual USDT-M yang aktif. None kalau futures tidak bisa diakses."""
+    try:
+        data = futures_get("/fapi/v1/exchangeInfo")
+    except Exception as exc:
+        print(f"[WARN] Data futures tidak bisa diambil, skor OI dilewati: {exc}")
+        return None
+    return {
+        s["symbol"]
+        for s in data.get("symbols", [])
+        if s.get("contractType") == "PERPETUAL"
+        and s.get("status") == "TRADING"
+        and s.get("quoteAsset") == "USDT"
+    }
+
+
+def perp_symbol_for(spot_symbol: str, perps: set[str]) -> str | None:
+    """Cari simbol perp untuk pair spot. Koin murah kadang pakai awalan 1000 /
+    1000000 di futures (spot PEPEUSDT -> perp 1000PEPEUSDT). Rasio OI dan
+    funding tidak terpengaruh awalan ini."""
+    for candidate in (spot_symbol, f"1000{spot_symbol}", f"1000000{spot_symbol}"):
+        if candidate in perps:
+            return candidate
+    return None
+
+
+def fetch_oi_signal(perp_symbol: str) -> signals.OpenInterestSignal | None:
+    """Ambil riwayat OI (WINDOW titik, period INTERVAL) + funding rate terakhir,
+    lalu nilai pakai signals.check_oi_building."""
+    hist = futures_get(
+        "/futures/data/openInterestHist",
+        {"symbol": perp_symbol, "period": INTERVAL, "limit": WINDOW},
+    )
+    # Urutkan lama -> baru berdasarkan timestamp, pakai OI dalam jumlah kontrak
+    # (bukan nilai USDT, supaya tidak ikut naik-turun karena harga)
+    hist = sorted(hist, key=lambda x: int(x["timestamp"]))
+    oi_values = [float(x["sumOpenInterest"]) for x in hist]
+
+    funding = futures_get("/fapi/v1/fundingRate", {"symbol": perp_symbol, "limit": 1})
+    if not funding:
+        return None
+    funding_rate = float(funding[-1]["fundingRate"])
+
+    return signals.check_oi_building(oi_values, funding_rate, OI_RISE_FACTOR, FUNDING_MAX)
+
+
+def add_oi_factor(setups: list[Setup]) -> None:
+    """Isi faktor OI untuk pair yang SUDAH lolos syarat inti. Pair tanpa perp
+    atau yang datanya gagal diambil cukup tidak dapat ⭐ OI (tidak error)."""
+    if not setups:
+        return
+    perps = get_perp_symbols()
+    if perps is None:
+        return  # futures tidak bisa diakses: semua tetap "unavailable"
+
+    def work(s: Setup) -> None:
+        perp = perp_symbol_for(s.symbol, perps)
+        if perp is None:
+            s.futures_status = "no_perp"
+            return
+        try:
+            s.oi = fetch_oi_signal(perp)
+            s.futures_status = "ok" if s.oi is not None else "unavailable"
+        except Exception as exc:
+            print(f"[WARN] OI {perp}: {exc}")
+
+    with ThreadPoolExecutor(max_workers=base.MAX_WORKERS) as pool:
+        list(pool.map(work, setups))
 
 
 def check_symbol(symbol: str, volume_24h: float) -> Setup | None:
@@ -233,7 +375,10 @@ def scan() -> tuple[list[Setup], int, int]:
                 errors += 1
                 print(f"[WARN] {symbol}: {exc}")
 
-    # Urutkan ⭐⭐ (kompresi) di atas, lalu rasio kenaikan volume tertinggi
+    # Faktor OI hanya untuk pair yang sudah lolos syarat inti (hemat API)
+    add_oi_factor(setups)
+
+    # Urutkan dari skor tertinggi, lalu rasio kenaikan volume tertinggi
     setups.sort(key=lambda x: (x.score, x.signal.volume_rise), reverse=True)
     return setups, len(targets), errors
 
@@ -249,7 +394,8 @@ def build_messages(setups: list[Setup], scanned: int, errors: int) -> list[str]:
         shown[0].candle_open_time if shown else int(time.time() * 1000)
     )
     base_span = span_label(BASE_LOOKBACK)
-    coiled = sum(1 for s in setups if s.compressed)
+    top = sum(1 for s in setups if s.score >= 2)
+    futures_down = bool(setups) and all(s.futures_status == "unavailable" for s in setups)
 
     header = (
         f"{LABEL} <b>Binance ({html.escape(INTERVAL)})</b>\n"
@@ -257,9 +403,11 @@ def build_messages(setups: list[Setup], scanned: int, errors: int) -> list[str]:
         f"⚙️ Flat ≤ {MAX_RANGE_PCT:g}% ({WINDOW} candle / {span_label(WINDOW)}) | "
         f"Vol naik ≥ {VOL_RISE_FACTOR:g}x | "
         f"Posisi ≤ {MAX_POSITION * 100:g}% range {base_span}\n"
-        f"⭐ Skor: ⭐ akumulasi | ⭐⭐ + kompresi (volatilitas ≤ {COMPRESS_RATIO:g}x paruh lama)\n"
-        f"🔎 Discan: {scanned} pair | Akumulasi: {len(setups)}"
-        + (f" | ⭐⭐: {coiled}" if coiled else "")
+        f"⭐ Skor /3: akumulasi + kompresi (volatilitas ≤ {COMPRESS_RATIO:g}x) "
+        f"+ OI (≥ {OI_RISE_FACTOR:g}x & funding ≤ {FUNDING_MAX * 100:g}%)\n"
+        + ("⚠️ Data futures tidak tersedia, skor OI dilewati\n" if futures_down else "")
+        + f"🔎 Discan: {scanned} pair | Akumulasi: {len(setups)}"
+        + (f" | ⭐⭐+: {top}" if top else "")
         + (f" | Error: {errors}" if errors else "")
         + "\n"
     )
@@ -275,6 +423,7 @@ def build_messages(setups: list[Setup], scanned: int, errors: int) -> list[str]:
             f"{i}. {LABEL} <a href=\"{link}\"><b>{html.escape(s.symbol)}</b></a> "
             f"— Vol <b>{a.volume_rise:.2f}x</b>\n"
             f"   {html.escape(score_line(s))}\n"
+            f"   {html.escape(detail_line(s))}\n"
             f"   Rentang: {a.range_pct:.1f}% | Posisi range {base_span}: "
             f"{a.position * 100:.0f}%\n"
             f"   Range {base_span}: ${base.fmt_price(a.base_low)} – ${base.fmt_price(a.base_high)}\n"
