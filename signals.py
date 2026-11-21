@@ -63,6 +63,7 @@ def _env_bool(name: str, default: bool) -> bool:
 # Index kolom kline Binance (supaya kode lebih mudah dibaca)
 K_OPEN_TIME = 0
 K_OPEN = 1
+K_HIGH = 2
 K_LOW = 3
 K_CLOSE = 4
 K_CLOSE_TIME = 6
@@ -337,4 +338,111 @@ def confluence_legend(cfg: ConfluenceConfig) -> str:
         f"Engulfing@support ≤ {cfg.support_distance_pct:g}% · "
         f"Buy ≥ {cfg.buy_pressure_min * 100:g}% | "
         f"{CONFLUENCE_TAG} = skor ≥ {cfg.min_score}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sinyal 4: Akumulasi (harga flat + volume naik + dekat base)
+# ---------------------------------------------------------------------------
+# Dipakai accumulation_scanner.py. Tidak dipakai di skor confluence.
+
+@dataclass
+class Accumulation:
+    """Hasil sinyal akumulasi untuk satu pair."""
+    volume_rise: float  # rata-rata volume paruh terbaru / paruh lama
+    range_pct: float    # rentang harga window: (high max - low min) / low min x 100
+    position: float     # posisi close terakhir di range base (0 = di low, 1 = di high)
+    base_low: float     # low terendah di base lookback
+    base_high: float    # high tertinggi di base lookback
+
+
+def price_range_pct(candles: list) -> float | None:
+    """Rentang harga sekumpulan candle dalam persen:
+    (high tertinggi - low terendah) / low terendah x 100."""
+    if not candles:
+        return None
+    high = max(float(k[K_HIGH]) for k in candles)
+    low = min(float(k[K_LOW]) for k in candles)
+    if low <= 0:
+        return None
+    return (high - low) / low * 100
+
+
+def volume_rise_ratio(candles: list) -> float | None:
+    """
+    Bagi candle jadi 2 paruh sama panjang, lalu hitung
+    rata-rata quote volume paruh TERBARU / rata-rata paruh LAMA.
+    Kalau jumlah candle ganjil, candle paling lama dibuang supaya paruhnya sama.
+    """
+    half = len(candles) // 2
+    if half == 0:
+        return None
+    old, new = candles[-2 * half:-half], candles[-half:]
+    avg_old = sum(float(k[K_QUOTE_VOLUME]) for k in old) / half
+    avg_new = sum(float(k[K_QUOTE_VOLUME]) for k in new) / half
+    if avg_old <= 0:
+        return None
+    return avg_new / avg_old
+
+
+def range_position(candles: list) -> tuple[float, float, float] | None:
+    """
+    Posisi close candle terakhir di dalam range high-low sekumpulan candle.
+    Return (posisi 0..1, low, high). 0 = di low terendah, 1 = di high tertinggi.
+    """
+    if not candles:
+        return None
+    high = max(float(k[K_HIGH]) for k in candles)
+    low = min(float(k[K_LOW]) for k in candles)
+    if high <= low:
+        return None
+    close = float(candles[-1][K_CLOSE])
+    return (close - low) / (high - low), low, high
+
+
+def check_accumulation(
+    closed: list,
+    window: int,
+    max_range_pct: float,
+    vol_rise_factor: float,
+    base_lookback: int,
+    max_position: float,
+) -> Accumulation | None:
+    """
+    Akumulasi = ketiga syarat ini terpenuhi pada candle close terbaru:
+    1. Flat: rentang harga `window` candle terakhir <= `max_range_pct` %.
+    2. Volume naik: rata-rata volume paruh terbaru `window` >= `vol_rise_factor`
+       x rata-rata paruh lama.
+    3. Dekat base: posisi close di range `base_lookback` candle terakhir
+       <= `max_position` (0..1).
+    Pair yang candle-nya belum cukup (misal listing baru) tidak dihitung.
+    """
+    if window < 2 or len(closed) < max(window, base_lookback):
+        return None
+    recent = closed[-window:]
+
+    # 1) Flat
+    rng = price_range_pct(recent)
+    if rng is None or rng > max_range_pct:
+        return None
+
+    # 2) Volume naik
+    rise = volume_rise_ratio(recent)
+    if rise is None or rise < vol_rise_factor:
+        return None
+
+    # 3) Dekat base
+    pos = range_position(closed[-base_lookback:])
+    if pos is None:
+        return None
+    position, base_low, base_high = pos
+    if position > max_position:
+        return None
+
+    return Accumulation(
+        volume_rise=rise,
+        range_pct=rng,
+        position=position,
+        base_low=base_low,
+        base_high=base_high,
     )

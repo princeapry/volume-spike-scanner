@@ -1,0 +1,60 @@
+name: Accumulation Scanner
+
+on:
+  # Jalan otomatis tiap 4 jam di menit ke-5 (waktu UTC): 00:05, 04:05, 08:05, ...
+  # Candle 4h Binance tutup di jam 00, 04, 08, 12, 16, 20 UTC, jadi menit ke-5
+  # memastikan candle 4h sebelumnya sudah close. Menit ke-5 (bukan ke-3)
+  # supaya tidak barengan dengan Reversal Scanner.
+  # (= 07:05, 11:05, 15:05, 19:05, 23:05, 03:05 WIB)
+  # Catatan: kalau ACCUM_INTERVAL diganti (misal 1d), sesuaikan juga cron ini.
+  # Jadwal GitHub Actions bisa telat beberapa menit saat server ramai.
+  schedule:
+    - cron: "5 */4 * * *"
+  # Bisa juga dijalankan manual dari tab Actions -> Run workflow
+  workflow_dispatch:
+
+# Cegah dua run berjalan bersamaan (grup terpisah dari scanner lain)
+concurrency:
+  group: accumulation-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Jalankan accumulation scanner
+        env:
+          # Rahasia -> sama dengan scanner lain (sudah ada)
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Pengaturan khusus scanner ini -> tab "Variables" (kosong = pakai default)
+          ACCUM_INTERVAL: ${{ vars.ACCUM_INTERVAL }}
+          ACCUM_WINDOW: ${{ vars.ACCUM_WINDOW }}
+          ACCUM_MAX_RANGE_PCT: ${{ vars.ACCUM_MAX_RANGE_PCT }}
+          ACCUM_VOL_RISE_FACTOR: ${{ vars.ACCUM_VOL_RISE_FACTOR }}
+          ACCUM_BASE_LOOKBACK: ${{ vars.ACCUM_BASE_LOOKBACK }}
+          ACCUM_MAX_POSITION: ${{ vars.ACCUM_MAX_POSITION }}
+          ACCUM_MAX_ALERTS: ${{ vars.ACCUM_MAX_ALERTS }}
+          ACCUM_SEND_IF_EMPTY: ${{ vars.ACCUM_SEND_IF_EMPTY }}
+          ACCUM_EXTRA_BLOCKLIST: ${{ vars.ACCUM_EXTRA_BLOCKLIST }}
+          # Pengaturan bersama dengan scanner lain (universe pair & tampilan)
+          MIN_24H_QUOTE_VOLUME: ${{ vars.MIN_24H_QUOTE_VOLUME }}
+          MAX_ALERTS: ${{ vars.MAX_ALERTS }}
+          SEND_IF_EMPTY: ${{ vars.SEND_IF_EMPTY }}
+          TIMEZONE: ${{ vars.TIMEZONE }}
+          BINANCE_BASE_URL: ${{ vars.BINANCE_BASE_URL }}
+        run: python accumulation_scanner.py

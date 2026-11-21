@@ -4,7 +4,9 @@ Scanner otomatis yang memantau **semua pair USDT di Binance Spot**. Kalau volume
 
 > 🆕 Repo ini juga berisi scanner kedua, **Reversal Scanner** (`reversal_scanner.py`), untuk mendeteksi setup *bullish engulfing di support + volume* di timeframe 4 jam. Lihat bagian [🔄 Reversal Scanner](#-reversal-scanner-bullish-engulfing-di-support).
 >
-> ⭐ Setiap pair di alert kedua scanner sekarang punya **skor confluence 0–3**. Pair dengan skor ≥ 2 diberi tanda **🔥 CONFLUENCE**. Lihat bagian [⭐ Skor Confluence](#-skor-confluence).
+> 🟢 Ada juga scanner ketiga, **Accumulation Scanner** (`accumulation_scanner.py`), untuk mendeteksi pair yang harganya *flat di dekat dasar sementara volumenya naik* (timeframe 4 jam). Lihat bagian [🟢 Accumulation Scanner](#-accumulation-scanner-flat--volume-naik).
+>
+> ⭐ Setiap pair di alert volume spike & reversal scanner sekarang punya **skor confluence 0–3**. Pair dengan skor ≥ 2 diberi tanda **🔥 CONFLUENCE**. Lihat bagian [⭐ Skor Confluence](#-skor-confluence).
 
 - Hanya pakai endpoint **publik** Binance, jadi **tidak perlu API key** akun Binance.
 - Gratis: GitHub Actions gratis tanpa batas menit untuk repo **public**. Repo private dapat 2.000 menit/bulan, dan scanner ini cuma butuh sekitar 1 menit per run (±720 menit/bulan).
@@ -59,10 +61,12 @@ Contoh pesan:
 volume-spike-scanner/
 ├── scanner.py                         # Scanner volume spike
 ├── reversal_scanner.py                # Scanner bullish engulfing di support
-├── signals.py                         # Logika deteksi sinyal + skor confluence (dipakai kedua scanner)
+├── accumulation_scanner.py            # Scanner akumulasi (flat + volume naik)
+├── signals.py                         # Logika deteksi sinyal + skor confluence (dipakai semua scanner)
 ├── requirements.txt                   # Dependency Python
 ├── .github/workflows/volume-spike.yml # Jadwal volume spike (tiap jam)
 ├── .github/workflows/reversal.yml     # Jadwal reversal scanner (tiap 4 jam)
+├── .github/workflows/accumulation.yml # Jadwal accumulation scanner (tiap 4 jam)
 ├── .gitignore
 └── README.md
 ```
@@ -285,6 +289,90 @@ Semua opsional, dan berlaku untuk **kedua** scanner (sudah dikirim di kedua work
 
 ---
 
+## 🟢 Accumulation Scanner (Flat + Volume Naik)
+
+Scanner ketiga yang terpisah (`accumulation_scanner.py`, workflow `accumulation.yml`). Idenya: kalau harga bergerak datar di dekat dasar tapi volumenya pelan-pelan naik, bisa jadi ada pihak yang sedang mengumpulkan (akumulasi) sebelum harga bergerak. Universe pair-nya **sama** dengan scanner lain, **ditambah** blokir token saham, ETF, dan komoditas (lihat di bawah). Secret Telegram-nya juga sama, jadi **tidak perlu setup tambahan**.
+
+### Daftar blokir saham, ETF & komoditas
+
+Token saham/ETF (contoh `AMZNBUSDT`, `SPYBUSDT`) dan token emas (`XAUTUSDT`, `PAXGUSDT`) jarang bergerak lebih dari 20% seminggu, jadi hampir selalu lolos syarat "flat" dan membanjiri alert. Karena itu, **khusus scanner ini**, aset tersebut dibuang dari universe. Scanner lain tetap memindainya.
+
+- Daftarnya ada di `accumulation_scanner.py` (`BLOCKED_STOCK_TICKERS`, `BLOCKED_ETF_TICKERS`, `BLOCKED_OTHER_TICKERS`, `BLOCKED_COMMODITY_ASSETS`), ditulis sebagai ticker aslinya (AMZN, TSLA, SPY, …).
+- Binance menamai token saham/ETF dengan format **ticker + `B`** (AMZN → `AMZNB`, BRK.B → `BRKBB`), jadi yang dicocokkan adalah `ticker + "B"`. Ticker-nya sengaja tidak dicocokkan apa adanya karena ada yang bentrok dengan crypto asli (misal `BB` = BounceBit, `QNT` = Quant). Crypto yang kebetulan berakhiran B (ARB, BNB, SHIB, TRB, dll.) tidak ikut terblokir.
+- Daftar diverifikasi dari data `exchangeInfo` Binance per 21 Nov 2026 (113 token saham/ETF + 2 token emas).
+- Kalau Binance menambah token saham baru, tambahkan lewat variable `ACCUM_EXTRA_BLOCKLIST` (nama base asset persis, dipisah koma, misal `NEWSTOCKB,KAU`) tanpa perlu ubah kode.
+
+### Syarat akumulasi
+
+Dicek pada candle yang **sudah close** (default 4h). Alert hanya dikirim kalau **ketiga** syarat terpenuhi. Definisinya ada di `signals.check_accumulation()`:
+
+1. **Flat**: dari `ACCUM_WINDOW` candle terakhir (default 42 = 7 hari), `(high tertinggi − low terendah) ÷ low terendah ≤ ACCUM_MAX_RANGE_PCT` %.
+2. **Volume naik**: `ACCUM_WINDOW` candle itu dibagi 2 paruh sama panjang. Rata-rata volume (USDT) paruh terbaru harus `≥ ACCUM_VOL_RISE_FACTOR` × rata-rata paruh lama.
+3. **Dekat base**: dari `ACCUM_BASE_LOOKBACK` candle terakhir (default 180 = 30 hari), posisi harga close sekarang di range high–low itu harus `≤ ACCUM_MAX_POSITION`. Posisi `0` = tepat di low terendah, `1` = tepat di high tertinggi.
+
+Pair yang candle-nya belum cukup (misal baru listing kurang dari 30 hari) dilewati. Hasil diurutkan dari rasio kenaikan volume tertinggi. Kalau tidak ada pair yang lolos, bot **tidak mengirim pesan**, kecuali `ACCUM_SEND_IF_EMPTY=true` (atau `SEND_IF_EMPTY=true`).
+
+Contoh pesan:
+
+```
+🟢 AKUMULASI Binance (4h)
+🕒 Candle: 21 Nov 2026 11:00 WIB
+⚙️ Flat ≤ 20% (42 candle / 7 hari) | Vol naik ≥ 1.3x | Posisi ≤ 60% range 30 hari
+🔎 Discan: 249 pair | Akumulasi: 2
+
+1. 🟢 AKUMULASI HYPERUSDT — Vol 2.60x
+   Rentang: 13.7% | Posisi range 30 hari: 9%
+   Range 30 hari: $0.0394 – $0.07
+   Harga: $0.0423 | 24j: 1.45M USDT
+
+2. 🟢 AKUMULASI SUSHIUSDT — Vol 1.59x
+   Rentang: 19.9% | Posisi range 30 hari: 7%
+   Range 30 hari: $0.137 – $0.2193
+   Harga: $0.1424 | 24j: 941.35K USDT
+```
+
+- **Vol 2.60x**: rata-rata volume paruh terbaru 2,6× paruh lama.
+- **Rentang 13.7%**: selama 7 hari terakhir harga hanya bergerak dalam rentang 13,7%.
+- **Posisi range 30 hari 9%**: harga sekarang ada di 9% bagian bawah range 30 hari.
+
+### Jadwal
+
+Workflow `accumulation.yml` jalan **tiap 4 jam di menit ke-5 UTC** (00:05, 04:05, … UTC = 07:05, 11:05, … WIB), dua menit setelah reversal scanner supaya tidak barengan. Bisa juga dijalankan manual: tab **Actions → Accumulation Scanner → Run workflow**.
+
+> Kalau `ACCUM_INTERVAL` diganti, ubah juga baris `cron` di `.github/workflows/accumulation.yml`. Ingat juga bahwa `ACCUM_WINDOW` dan `ACCUM_BASE_LOOKBACK` dihitung dalam **jumlah candle**, jadi durasinya ikut berubah (label "7 hari / 30 hari" di pesan otomatis menyesuaikan).
+
+### Pengaturan (GitHub Variables)
+
+Semua opsional.
+
+| Variable                | Default | Keterangan |
+|-------------------------|---------|------------|
+| `ACCUM_INTERVAL`        | `4h`    | Timeframe candle |
+| `ACCUM_WINDOW`          | `42`    | Jumlah candle untuk cek flat & kenaikan volume (42 × 4h = 7 hari) |
+| `ACCUM_MAX_RANGE_PCT`   | `20`    | Rentang harga maksimal di window (%) |
+| `ACCUM_VOL_RISE_FACTOR` | `1.3`   | Volume paruh terbaru harus ≥ N × paruh lama |
+| `ACCUM_BASE_LOOKBACK`   | `180`   | Jumlah candle untuk range base (180 × 4h = 30 hari), maks 999 |
+| `ACCUM_MAX_POSITION`    | `0.6`   | Posisi maksimal di range base (`0`–`1`). `0.4` = hanya 40% bagian bawah |
+| `ACCUM_MAX_ALERTS`      | ikut `MAX_ALERTS` (`30`) | Maksimal pair per notifikasi |
+| `ACCUM_SEND_IF_EMPTY`   | ikut `SEND_IF_EMPTY` (`false`) | `true` = tetap kirim pesan walau tidak ada pair |
+| `ACCUM_EXTRA_BLOCKLIST` | (kosong) | Base asset tambahan yang diblokir, dipisah koma (misal `NEWSTOCKB,KAU`) |
+
+Variable bersama yang juga dipakai: `MIN_24H_QUOTE_VOLUME`, `TIMEZONE`, `BINANCE_BASE_URL`. `DRY_RUN`, `EXCLUDE_STABLES`, `EXCLUDE_LEVERAGED`, `MAX_WORKERS` juga berlaku.
+
+**Tips tuning:**
+- Terlalu banyak alert? Turunkan `ACCUM_MAX_POSITION` ke `0.4`, `ACCUM_MAX_RANGE_PCT` ke `15`, atau naikkan `ACCUM_VOL_RISE_FACTOR` ke `1.5`.
+- Masih ada token saham/ETF yang muncul? Kemungkinan token baru listing. Tambahkan ke `ACCUM_EXTRA_BLOCKLIST`.
+
+### Jalankan lokal
+
+```powershell
+$env:DRY_RUN = "true"
+$env:ACCUM_SEND_IF_EMPTY = "true"
+python accumulation_scanner.py
+```
+
+---
+
 ## 💻 Menjalankan di Komputer Sendiri (Opsional)
 
 Butuh Python 3.9 atau lebih baru. Download dari [python.org](https://www.python.org/downloads/) dan centang **"Add Python to PATH"** saat install.
@@ -337,4 +425,4 @@ Mac/Linux: ganti `$env:NAMA = "nilai"` dengan `export NAMA="nilai"`.
 
 - Scanner mengecek **candle terakhir yang sudah close**. Candle yang masih berjalan diabaikan supaya hasilnya tidak berubah-ubah.
 - Satu run memakai sekitar 2 × jumlah pair *request weight* Binance. Untuk ±230 pair itu sekitar 500 dari batas 6.000/menit, jadi aman.
-- Volume spike, pola bullish engulfing, dan skor confluence **bukan sinyal beli/jual**. Spike bisa terjadi karena pump, dump, listing baru, berita, atau whale. Selalu cek chart dan konteksnya sendiri sebelum mengambil keputusan. DYOR.
+- Volume spike, pola bullish engulfing, skor confluence, dan pola akumulasi **bukan sinyal beli/jual**. Spike bisa terjadi karena pump, dump, listing baru, berita, atau whale. Selalu cek chart dan konteksnya sendiri sebelum mengambil keputusan. DYOR.
