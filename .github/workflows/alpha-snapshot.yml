@@ -1,0 +1,86 @@
+name: Alpha Snapshot (manual)
+
+# Cek Binance Alpha secara MANUAL, misalnya dari iPad saat jam istirahat:
+# Actions -> Alpha Snapshot (manual) -> Run workflow.
+# Sengaja TIDAK pakai jadwal otomatis: kamu yang menekan tombol saat sempat.
+# Data (state + catatan alert) disimpan di branch "alpha-data".
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "snapshot = cek sekarang, report = kirim laporan hasil alert"
+        type: choice
+        options: [snapshot, report]
+        default: snapshot
+
+# Cegah dua run bersamaan (misal tombol ditekan dua kali)
+concurrency:
+  group: alpha-snapshot
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # untuk menyimpan data ke branch alpha-data
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATA_BRANCH: alpha-data
+
+    steps:
+      - name: Checkout kode
+        uses: actions/checkout@v4
+
+      - name: Ambil data run sebelumnya (branch alpha-data)
+        id: data
+        continue-on-error: true   # run pertama: branch belum ada
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DATA_BRANCH }}
+          path: alpha_data
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Jalankan
+        env:
+          # Rahasia yang sama dengan scanner lain (Settings > Secrets > Actions)
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Pengaturan opsional (tab Variables, kosong = default)
+          ALPHA_MIN_LIQ: ${{ vars.ALPHA_MIN_LIQ }}
+          ALPHA_MIN_VOL: ${{ vars.ALPHA_MIN_VOL }}
+          ALPHA_MAX_MCAP: ${{ vars.ALPHA_MAX_MCAP }}
+          ALPHA_VOL_MULT: ${{ vars.ALPHA_VOL_MULT }}
+          ALPHA_TOP_N: ${{ vars.ALPHA_TOP_N }}
+          TIMEZONE: ${{ vars.ALPHA_TIMEZONE || 'Asia/Tokyo' }}
+          ALPHA_DATA_DIR: alpha_data
+          MODE: ${{ inputs.mode }}
+        run: |
+          mkdir -p alpha_data
+          if [ "$MODE" = "report" ]; then
+            python alpha_snapshot.py --report
+          else
+            python alpha_snapshot.py
+          fi
+
+      - name: Simpan data ke branch alpha-data
+        if: always() && inputs.mode != 'report'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd alpha_data
+          [ -f state.json ] || { echo "Tidak ada data untuk disimpan."; exit 0; }
+          rm -rf .git
+          git init -q
+          git checkout -q -b "$DATA_BRANCH"
+          git add -A
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "alpha snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          # Satu commit saja, ditimpa tiap run, supaya riwayat repo tidak membengkak
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "$DATA_BRANCH"
+          echo "Data tersimpan di branch $DATA_BRANCH."
