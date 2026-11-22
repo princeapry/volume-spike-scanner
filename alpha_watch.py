@@ -37,6 +37,7 @@ skill folder (loaded automatically; real environment variables win):
   ALPHA_POLL_SECONDS    loop interval, default 60
   ALPHA_VOL_MULT        volume-spike threshold, x average, default 5
   ALPHA_VOL_WINDOW_MIN  volume-spike window in minutes, default 60
+  ALPHA_MIN_SPIKE_USD   min USD actually traded in that window to count, default 10000
   ALPHA_COOLDOWN_MIN    min minutes between repeat VOL/MOVE alerts per token, default 60
   ALPHA_PRICE_MOVE_PCT  price-move threshold %, default 30
   ALPHA_MIN_VOL         ignore tokens below this 24h volume, default 0
@@ -190,6 +191,7 @@ def build_cfg():
         "poll_seconds": max(15, int(getenv_float("ALPHA_POLL_SECONDS", 60))),
         "vol_mult": getenv_float("ALPHA_VOL_MULT", 5),
         "vol_window_min": max(10, int(getenv_float("ALPHA_VOL_WINDOW_MIN", 60))),
+        "min_spike_usd": getenv_float("ALPHA_MIN_SPIKE_USD", 10000),
         "cooldown_min": getenv_float("ALPHA_COOLDOWN_MIN", 60),
         "price_move_pct": getenv_float("ALPHA_PRICE_MOVE_PCT", 30),
         "min_vol": getenv_float("ALPHA_MIN_VOL", 0),
@@ -435,8 +437,11 @@ def detect(prev, curr, cfg, ref_vol=None, now=None, cooldown=None):
         if ref and ref > 0 and not cooling(tid, "VOL"):
             g = (c["volume"] - ref) / ref
             mult = g * 1440.0 / window + 1.0
-            if mult >= cfg["vol_mult"]:
-                alerts.append({"kind": "VOL", "tok": c, "growth": g * 100,
+            # USD actually traded in the window; filters near-dead tokens where a
+            # $17 trade on $94 daily volume would otherwise read as "5x".
+            usd = max(0.0, c["volume"] - ref) + ref * window / 1440.0
+            if mult >= cfg["vol_mult"] and usd >= cfg.get("min_spike_usd", 10000):
+                alerts.append({"kind": "VOL", "tok": c, "growth": g * 100, "usd": usd,
                                "mult": mult, "prev_vol": ref, "window": window})
 
         if (abs(c["change"]) >= cfg["price_move_pct"] > abs(p.get("change", 0))
@@ -614,8 +619,9 @@ def format_alert(a):
         extra.append("CEX-listed: " + ("yes" if t["cex"] else "no"))
         lines.append(" | ".join(extra))
     if a["kind"] == "VOL":
-        lines.append(f"↑ last {a['window']}m ≈ {a['mult']:.1f}x normal volume "
-                     f"(24h vol {a['growth']:+.1f}%, was {fmt_usd(a['prev_vol'])})")
+        lines.append(f"↑ last {a['window']}m ≈ {a['mult']:.1f}x normal volume, "
+                     f"~{fmt_usd(a.get('usd', 0))} traded "
+                     f"(24h vol was {fmt_usd(a['prev_vol'])})")
 
     if t["bsc"] and t["contract"]:
         lines.append(f'<a href="https://bscscan.com/token/{t["contract"]}">verify on BscScan</a>')
