@@ -506,7 +506,7 @@ Variable opsional (tab **Variables**, kosong = default):
 | `ALPHA_MIN_LIQ` | `50000` | Likuiditas minimal (USD). Token di bawahnya diabaikan |
 | `ALPHA_MIN_VOL` | `0` | Volume 24 jam minimal (USD) |
 | `ALPHA_MAX_MCAP` | `0` (tanpa batas) | Market cap maksimal, misal `50000000` untuk fokus ke token kecil |
-| `ALPHA_VOL_MULT` | `3` | Ambang lonjakan volume (× normal) |
+| `ALPHA_VOL_MULT` | `5` | Ambang lonjakan volume (× normal). Baru dihitung kalau jeda sejak patokan volume ≥ 30 menit |
 | `ALPHA_TOP_N` | `5` | Maks token per bagian di pesan |
 | `ALPHA_TIMEZONE` | `Asia/Tokyo` | Zona waktu di pesan |
 

@@ -26,7 +26,7 @@ Environment variable (kosong = default):
   ALPHA_MIN_LIQ    likuiditas minimal (USD), default 50000
   ALPHA_MIN_VOL    volume 24 jam minimal (USD), default 0
   ALPHA_MAX_MCAP   market cap maksimal (USD), 0 = tanpa batas, default 0
-  ALPHA_VOL_MULT   ambang lonjakan volume, x normal, default 3
+  ALPHA_VOL_MULT   ambang lonjakan volume, x normal, default 5
   ALPHA_TOP_N      maks token per bagian di pesan, default 5
   TIMEZONE         zona waktu pesan, default Asia/Tokyo
   ALPHA_DRY_RUN    "1" = jangan kirim Telegram, cetak saja
@@ -45,6 +45,7 @@ import alpha_watch as aw
 
 TG_LIMIT = 3900          # batas aman di bawah 4096 karakter Telegram
 OBS_MAX_HOURS = 48       # berapa lama harga sebuah alert terus dicatat
+MIN_VOL_WINDOW_MIN = 30  # di bawah ini lonjakan volume tidak dihitung (terlalu berisik)
 D24_RANGE = (18, 36)     # observasi yang dihitung sebagai "~24 jam"
 
 CSV_FIELDS = ["time", "kind", "symbol", "name", "token_id", "signal",
@@ -91,7 +92,7 @@ def build_cfg():
         "min_liq": aw.getenv_float("ALPHA_MIN_LIQ", 50000),
         "min_vol": aw.getenv_float("ALPHA_MIN_VOL", 0),
         "max_mcap": aw.getenv_float("ALPHA_MAX_MCAP", 0),
-        "vol_mult": aw.getenv_float("ALPHA_VOL_MULT", 3),
+        "vol_mult": aw.getenv_float("ALPHA_VOL_MULT", 5),
         "top_n": max(1, int(aw.getenv_float("ALPHA_TOP_N", 5))),
         "tg_token": os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
         "tg_chat": os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
@@ -244,12 +245,14 @@ def clip(text):
     return cut + "\n…(dipotong, lihat last_digest.txt)"
 
 
-def build_digest(cfg, now, elapsed_min, curr, new, vol, gone, log):
+def build_digest(cfg, now, elapsed_min, curr, new, vol, gone, log,
+                 vol_window=None, vol_ok=True):
     n = cfg["top_n"]
+    vol_window = elapsed_min if vol_window is None else vol_window
     filt = f"liq ≥ {aw.fmt_usd(cfg['min_liq'])}"
     if cfg["max_mcap"] > 0:
         filt += f" • mcap ≤ {aw.fmt_usd(cfg['max_mcap'])}"
-    window = "24j vs sebelumnya" if elapsed_min >= 1440 else f"{fmt_ago(elapsed_min)} terakhir"
+    window = "24j vs sebelumnya" if vol_window >= 1440 else f"{fmt_ago(vol_window)} terakhir"
     lines = [f"🛰 <b>ALPHA SNAPSHOT</b> — {fmt_time(now)}",
              f"cek terakhir {fmt_ago(elapsed_min)} lalu • {len(curr)} token • {filt}"]
     if new:
@@ -266,8 +269,13 @@ def build_digest(cfg, now, elapsed_min, curr, new, vol, gone, log):
         names = ", ".join(html.escape(t["symbol"]) for t in gone[:10])
         more = f" …+{len(gone) - 10}" if len(gone) > 10 else ""
         lines += ["", f"⚪️ Keluar dari Alpha ({len(gone)}): {names}{more}"]
-    if not (new or vol or gone):
+    if not vol_ok:
+        lines += ["", f"ℹ️ Lonjakan volume belum dihitung: baru {fmt_ago(vol_window)} sejak patokan "
+                      f"volume (minimal {MIN_VOL_WINDOW_MIN}m). Listing baru tetap dicek."]
+    if not (new or vol or gone) and vol_ok:
         lines += ["", "😴 Tidak ada listing baru atau lonjakan volume sejak cek terakhir."]
+    elif not (new or gone) and not vol_ok:
+        lines += ["😴 Tidak ada listing baru sejak cek terakhir."]
     board = scoreboard(log, now)
     if board:
         lines += ["", "📒 <b>Alert sebelumnya</b> (harga sekarang vs saat alert)"] + board
@@ -356,26 +364,37 @@ def run_snapshot(cfg, now=None, tokens=None):
                      "Kelihatannya data setengah, run ini dilewati. Coba jalankan lagi.")
         return "partial"
 
+    def vols(snapshot):
+        return {tid: t.get("volume", 0) for tid, t in snapshot.items()}
+
     if not prev or not last:
-        aw.save_json(cfg["state"], {"last_run": now, "snapshot": curr})
+        aw.save_json(cfg["state"], {"last_run": now, "snapshot": curr,
+                                    "vol_ref_ts": now, "vol_ref": vols(curr)})
         deliver(cfg, f"🛰 <b>ALPHA SNAPSHOT</b> — {fmt_time(now)}\n"
                      f"Data awal tersimpan: {len(curr)} token. Mulai run berikutnya, "
                      "pesan ini berisi listing baru dan lonjakan volume sejak cek terakhir.")
         return "baseline"
 
     elapsed = max(1.0, (now - last) / 60.0)
+    # Patokan volume terpisah dari snapshot: kalau tombol ditekan lagi terlalu cepat,
+    # patokan lama tetap dipakai, jadi pengukuran volume tidak rusak.
+    vol_ref = state.get("vol_ref") or vols(prev)
+    vol_ref_ts = state.get("vol_ref_ts") or last
+    vol_window = max(1.0, (now - vol_ref_ts) / 60.0)
+    vol_ok = vol_window >= MIN_VOL_WINDOW_MIN
 
     new = [t for tid, t in curr.items() if tid not in prev and passes(t, cfg)]
     new.sort(key=lambda t: -t["liq"])
 
     vol = []
-    for tid, t in curr.items():
-        p = prev.get(tid)
-        if not p or p.get("delisted") or not passes(t, cfg):
-            continue
-        m = vol_multiple(p.get("volume", 0), t["volume"], elapsed)
-        if m >= cfg["vol_mult"]:
-            vol.append((m, t))
+    if vol_ok:
+        for tid, t in curr.items():
+            p = prev.get(tid)
+            if not p or p.get("delisted") or not passes(t, cfg) or tid not in vol_ref:
+                continue
+            m = vol_multiple(vol_ref[tid], t["volume"], vol_window)
+            if m >= cfg["vol_mult"]:
+                vol.append((m, t))
     vol.sort(key=lambda x: -x[0])
 
     # pakai filter yang sama, supaya token receh yang tak pernah ditampilkan tidak ikut
@@ -384,7 +403,7 @@ def run_snapshot(cfg, now=None, tokens=None):
 
     log = aw.load_json(cfg["log"], [])
     update_outcomes(log, curr, now)
-    window = "24j" if elapsed >= 1440 else fmt_ago(elapsed)
+    window = "24j" if vol_window >= 1440 else fmt_ago(vol_window)
     for t in new:
         rec = make_record("NEW", t, now, "listing baru")
         if rec:
@@ -396,8 +415,12 @@ def run_snapshot(cfg, now=None, tokens=None):
     aw.save_json(cfg["log"], log)
     export_csv(cfg["csv"], log)
 
-    text = build_digest(cfg, now, elapsed, curr, new, vol, gone, log)
-    aw.save_json(cfg["state"], {"last_run": now, "snapshot": curr})
+    text = build_digest(cfg, now, elapsed, curr, new, vol, gone, log,
+                        vol_window=vol_window, vol_ok=vol_ok)
+    if vol_ok:   # patokan volume hanya diperbarui kalau jedanya cukup
+        vol_ref, vol_ref_ts = vols(curr), now
+    aw.save_json(cfg["state"], {"last_run": now, "snapshot": curr,
+                                "vol_ref_ts": vol_ref_ts, "vol_ref": vol_ref})
     deliver(cfg, text)
     return "ok"
 
