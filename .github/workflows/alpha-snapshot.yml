@@ -55,6 +55,7 @@ jobs:
           ALPHA_MIN_VOL: ${{ vars.ALPHA_MIN_VOL }}
           ALPHA_MAX_MCAP: ${{ vars.ALPHA_MAX_MCAP }}
           ALPHA_VOL_MULT: ${{ vars.ALPHA_VOL_MULT }}
+          ALPHA_MIN_SPIKE_USD: ${{ vars.ALPHA_MIN_SPIKE_USD }}
           ALPHA_TOP_N: ${{ vars.ALPHA_TOP_N }}
           TIMEZONE: ${{ vars.ALPHA_TIMEZONE || 'Asia/Tokyo' }}
           ALPHA_DATA_DIR: alpha_data

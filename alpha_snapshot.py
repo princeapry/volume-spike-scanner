@@ -27,6 +27,8 @@ Environment variable (kosong = default):
   ALPHA_MIN_VOL    volume 24 jam minimal (USD), default 0
   ALPHA_MAX_MCAP   market cap maksimal (USD), 0 = tanpa batas, default 0
   ALPHA_VOL_MULT   ambang lonjakan volume, x normal, default 5
+  ALPHA_MIN_SPIKE_USD  volume minimal (USD) yang benar-benar terjadi selama jeda
+                   supaya dihitung lonjakan, default 10000 (buang token yang nyaris mati)
   ALPHA_TOP_N      maks token per bagian di pesan, default 5
   TIMEZONE         zona waktu pesan, default Asia/Tokyo
   ALPHA_DRY_RUN    "1" = jangan kirim Telegram, cetak saja
@@ -93,6 +95,7 @@ def build_cfg():
         "min_vol": aw.getenv_float("ALPHA_MIN_VOL", 0),
         "max_mcap": aw.getenv_float("ALPHA_MAX_MCAP", 0),
         "vol_mult": aw.getenv_float("ALPHA_VOL_MULT", 5),
+        "min_spike_usd": aw.getenv_float("ALPHA_MIN_SPIKE_USD", 10000),
         "top_n": max(1, int(aw.getenv_float("ALPHA_TOP_N", 5))),
         "tg_token": os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
         "tg_chat": os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
@@ -128,6 +131,17 @@ def vol_multiple(ref_vol, now_vol, window_min):
         return now_vol / ref_vol
     g = (now_vol - ref_vol) / ref_vol
     return g * 1440.0 / window_min + 1.0
+
+
+def window_volume_usd(ref_vol, now_vol, window_min):
+    """
+    Perkiraan volume (USD) yang benar-benar terjadi selama jeda: pertumbuhan volume
+    24 jam + bagian volume lama yang "keluar" dari jendela 24 jam. Dipakai sebagai
+    lantai absolut supaya token dengan volume harian ~$100 tidak dianggap meledak.
+    """
+    if window_min >= 1440:
+        return now_vol
+    return max(0.0, now_vol - ref_vol) + ref_vol * window_min / 1440.0
 
 
 def explorer_link(t):
@@ -261,8 +275,9 @@ def build_digest(cfg, now, elapsed_min, curr, new, vol, gone, log,
         if len(new) > n:
             lines.append(f"…+{len(new) - n} lainnya")
     if vol:
-        lines += ["", f"📈 <b>VOLUME ≥{cfg['vol_mult']:g}x NORMAL ({window})</b>"]
-        lines += [tok_line(t, f"{m:.1f}x") for m, t in vol[:n]]
+        lines += ["", f"📈 <b>VOLUME ≥{cfg['vol_mult']:g}x NORMAL ({window}, "
+                      f"min {aw.fmt_usd(cfg['min_spike_usd'])})</b>"]
+        lines += [tok_line(t, f"{m:.1f}x · ~{aw.fmt_usd(usd)}") for m, t, usd in vol[:n]]
         if len(vol) > n:
             lines.append(f"…+{len(vol) - n} lainnya")
     if gone:
@@ -393,8 +408,9 @@ def run_snapshot(cfg, now=None, tokens=None):
             if not p or p.get("delisted") or not passes(t, cfg) or tid not in vol_ref:
                 continue
             m = vol_multiple(vol_ref[tid], t["volume"], vol_window)
-            if m >= cfg["vol_mult"]:
-                vol.append((m, t))
+            usd = window_volume_usd(vol_ref[tid], t["volume"], vol_window)
+            if m >= cfg["vol_mult"] and usd >= cfg["min_spike_usd"]:
+                vol.append((m, t, usd))
     vol.sort(key=lambda x: -x[0])
 
     # pakai filter yang sama, supaya token receh yang tak pernah ditampilkan tidak ikut
@@ -408,8 +424,8 @@ def run_snapshot(cfg, now=None, tokens=None):
         rec = make_record("NEW", t, now, "listing baru")
         if rec:
             log.append(rec)
-    for m, t in vol:
-        rec = make_record("VOL", t, now, f"vol ~{m:.1f}x / {window}")
+    for m, t, usd in vol:
+        rec = make_record("VOL", t, now, f"vol ~{m:.1f}x ~{aw.fmt_usd(usd)} / {window}")
         if rec:
             log.append(rec)
     aw.save_json(cfg["log"], log)
