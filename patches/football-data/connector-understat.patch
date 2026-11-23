@@ -1,0 +1,131 @@
+--- a/sports_skills/football/_connector.py
++++ b/sports_skills/football/_connector.py
+@@ -672,6 +672,43 @@
+         return None
+ 
+ 
++_UNDERSTAT_STATUS_KEY = "ustat_status"
++
++
++def _note_understat_failure(raw=None, err=None):
++    """Remember WHY Understat failed so callers can report it honestly."""
++    if err:
++        reason = f"Understat tidak bisa diakses: {err.get('message', err)}"
++    else:
++        text = (raw or b"").decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw or "")
++        low = text.lower()
++        if "come back soon" in low or "maintenance" in low:
++            reason = (
++                "Understat sedang maintenance (situs menampilkan halaman "
++                "'We will come back soon', bukan data). Coba lagi nanti."
++            )
++        elif "<html" in low or "<!doctype" in low:
++            reason = (
++                "Understat mengembalikan halaman HTML, bukan data JSON "
++                "(kemungkinan maintenance atau diblokir)."
++            )
++        else:
++            reason = "Understat mengembalikan respons yang tidak bisa dibaca sebagai JSON."
++    logger.warning(reason)
++    _cache_set(_UNDERSTAT_STATUS_KEY, reason, ttl=60)
++    return reason
++
++
++def _understat_failure_reason():
++    """Return the latest Understat failure reason (or None if none recently)."""
++    return _cache_get(_UNDERSTAT_STATUS_KEY) or None
++
++
++def _is_understat_maintenance_html(text):
++    low = (text or "").lower()
++    return "come back soon" in low and "errors.css" in low
++
++
+ def _understat_html(url):
+     """Fetch Understat HTML page (for embedded match_info parsing).
+ 
+@@ -685,10 +722,15 @@
+     raw, err = _http_fetch(url, headers=headers, rate_limiter=_understat_rate_limiter)
+     if err:
+         logger.debug("Understat HTML failed for %s: %s", url, err.get("message", ""))
++        _note_understat_failure(err=err)
+         _cache_set(cache_key, "", ttl=60)
+         return None
+     try:
+         html = raw.decode()
++        if _is_understat_maintenance_html(html):
++            _note_understat_failure(raw=html)
++            _cache_set(cache_key, "", ttl=60)
++            return None
+         _cache_set(cache_key, html, ttl=600)
+         return html
+     except Exception:
+@@ -716,6 +758,7 @@
+     )
+     if err:
+         logger.debug("Understat API failed for %s: %s", path, err.get("message", ""))
++        _note_understat_failure(err=err)
+         _cache_set(cache_key, "", ttl=60)
+         return None
+     try:
+@@ -723,6 +766,7 @@
+         _cache_set(cache_key, data, ttl=ttl)
+         return data
+     except (json.JSONDecodeError, ValueError):
++        _note_understat_failure(raw=raw)
+         _cache_set(cache_key, "", ttl=60)
+         return None
+ 
+@@ -1416,7 +1460,10 @@
+         league_data = _understat_api(
+             f"/getLeagueData/{understat_league}/{season_year}", ttl=3600
+         )
+-        matches = league_data.get("dates", []) if league_data else []
++        if league_data is None:
++            # Fetch failed (maintenance/network) - don't cache as "no matches"
++            return None
++        matches = league_data.get("dates", [])
+         _cache_set(season_key, matches, ttl=3600)
+     for m in matches:
+         m_date = m.get("datetime", "")[:10]
+@@ -4376,13 +4423,24 @@
+         }
+     understat_id = _find_understat_match_id(match_ctx)
+     if not understat_id:
++        down = _understat_failure_reason()
+         return {
+             "event_id": event_id,
+             "teams": [],
+             "shots": [],
+-            "message": "Match not found on Understat",
++            "message": down or "Match not found on Understat",
++            "understat_status": "unavailable" if down else "ok",
+         }
+     udata = _get_understat_match(understat_id)
++    down = _understat_failure_reason()
++    if down and udata and not (udata["shots"].get("h") or udata["shots"].get("a")):
++        return {
++            "event_id": event_id,
++            "teams": [],
++            "shots": [],
++            "message": down,
++            "understat_status": "unavailable",
++        }
+     if not udata:
+         return {
+             "event_id": event_id,
+@@ -4429,6 +4487,14 @@
+                             udata["rosters"], udata["match_info"]
+                         )
+                         _merge_understat_player_xg(teams, uteams)
++                down = _understat_failure_reason()
++                if down:
++                    return {
++                        "event_id": event_id,
++                        "teams": teams,
++                        "xg_message": down,
++                        "understat_status": "unavailable",
++                    }
+             return {"event_id": event_id, "teams": teams}
+     return {
+         "event_id": event_id,
