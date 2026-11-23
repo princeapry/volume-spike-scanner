@@ -66,11 +66,14 @@ volume-spike-scanner/
 ├── accumulation_scanner.py            # Scanner akumulasi (flat + volume naik)
 ├── confluence_scanner.py              # Scanner multi-signal lintas kategori
 ├── signals.py                         # Logika deteksi sinyal + skor confluence (dipakai semua scanner)
+├── alpha_snapshot.py                  # Cek Binance Alpha manual (listing baru + volume) + catatan hasil
+├── alpha_watch.py                     # Fungsi bersama Binance Alpha (feed, format, Telegram)
 ├── requirements.txt                   # Dependency Python
 ├── .github/workflows/volume-spike.yml # Jadwal volume spike (tiap jam)
 ├── .github/workflows/reversal.yml     # Jadwal reversal scanner (tiap 4 jam)
 ├── .github/workflows/accumulation.yml # Jadwal accumulation scanner (tiap 4 jam)
 ├── .github/workflows/confluence.yml   # Jadwal confluence scanner (tiap jam)
+├── .github/workflows/alpha-snapshot.yml # Alpha snapshot (MANUAL, tanpa jadwal)
 ├── .gitignore
 └── README.md
 ```
@@ -474,6 +477,41 @@ python confluence_scanner.py
 ```
 
 > `confluence_scanner.py` meng-import `scanner.py`, `reversal_scanner.py`, `accumulation_scanner.py`, dan `signals.py`, jadi semua file harus berada di folder yang sama.
+
+---
+
+## 🛰 Alpha Snapshot (Manual, dari iPad)
+
+Cek token **Binance Alpha** kapan pun kamu sempat, misalnya saat jam istirahat, tanpa laptop. Sengaja **tanpa jadwal otomatis**: kamu sendiri yang menekan tombol.
+
+**Cara menjalankan (iPad/HP):** buka repo ini di Safari atau app GitHub → tab **Actions** → **Alpha Snapshot (manual)** → **Run workflow** → pilih mode → **Run workflow**. Sekitar 1 menit kemudian pesan masuk ke Telegram.
+
+| Mode | Isi pesan |
+|---|---|
+| `snapshot` | 🚨 Listing baru sejak cek terakhir · 📈 Token dengan volume ≥ N× normal sejak cek terakhir · ⚪️ Token yang keluar dari Alpha · 📒 Alert sebelumnya: harga sekarang vs saat alert |
+| `report` | Rangkuman hasil semua alert: return di cek berikutnya, ~24 jam, puncak dan titik terendah yang tercatat |
+
+**Run pertama** hanya menyimpan data awal. Perbandingan baru dimulai di run kedua.
+
+**Lonjakan volume** dihitung dari pertumbuhan volume 24 jam sejak cek terakhir, lalu dikonversi menjadi "berapa kali volume normal untuk rentang waktu sepanjang itu". Kalau jedanya ≥ 24 jam, yang dibandingkan langsung volume 24 jam sekarang vs sebelumnya.
+
+**Catatan hasil.** Setiap listing baru/lonjakan volume dicatat dengan harga **saat kamu melihatnya**, lalu harganya dicatat lagi di setiap run berikutnya selama 48 jam. Karena run-nya manual, "puncak" dan "terendah" adalah harga di run-run itu, bukan pergerakan per menit. Itu justru mencerminkan kondisi nyata: kamu hanya bisa bertindak saat istirahat. Token yang keluar dari Alpha ditandai `gone` (bisa delist, bisa juga pindah ke spot).
+
+**Data disimpan** di branch `alpha-data` (satu commit, ditimpa setiap run): `alerts.csv` (bisa dibuka langsung di GitHub), `last_digest.txt`, `alerts_log.json`, `state.json`. Repo ini **public**, jadi data itu juga bisa dilihat orang lain.
+
+Variable opsional (tab **Variables**, kosong = default):
+
+| Variable | Default | Keterangan |
+|---|---|---|
+| `ALPHA_MIN_LIQ` | `50000` | Likuiditas minimal (USD). Token di bawahnya diabaikan |
+| `ALPHA_MIN_VOL` | `0` | Volume 24 jam minimal (USD) |
+| `ALPHA_MAX_MCAP` | `0` (tanpa batas) | Market cap maksimal, misal `50000000` untuk fokus ke token kecil |
+| `ALPHA_VOL_MULT` | `5` | Ambang lonjakan volume (× normal). Baru dihitung kalau jeda sejak patokan volume ≥ 30 menit |
+| `ALPHA_MIN_SPIKE_USD` | `10000` | Volume minimal (USD) yang benar-benar terjadi selama jeda supaya dihitung lonjakan. Membuang token nyaris mati, misalnya volume harian $94 + transaksi $17 yang terbaca "5x" |
+| `ALPHA_TOP_N` | `5` | Maks token per bagian di pesan |
+| `ALPHA_TIMEZONE` | `Asia/Tokyo` | Zona waktu di pesan |
+
+Memakai secret yang sama dengan scanner lain (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`). Read-only: tidak pernah order dan tidak butuh API key Binance. Endpoint Binance Alpha (`www.binance.com/bapi/...`) sudah dites bisa diakses dari runner GitHub (AS).
 
 ---
 
