@@ -4,3 +4,9 @@ __pycache__/
 venv/
 .env
 alpha_data/
+
+# Output hasil run (ditimpa tiap run)
+backtest_report.md
+backtest_events.csv
+divergence_screen.md
+ema_cross_screen.md
