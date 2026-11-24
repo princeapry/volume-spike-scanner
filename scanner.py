@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+import alert_state
 import signals
 
 
@@ -391,6 +392,10 @@ def main() -> int:
 
     print(f"[INFO] Selesai dalam {time.time() - started:.1f} detik. "
           f"Spike: {len(spikes)}, error: {errors}")
+
+    # Buang pair yang sudah dialertkan dalam ALERT_COOLDOWN_HOURS terakhir.
+    # Set ALERT_COOLDOWN_HOURS=0 untuk mematikan dedup.
+    spikes, _ = alert_state.filter_new("volume-spike", spikes)
 
     # Tidak ada spike & tidak diminta kirim pesan kosong -> selesai
     if not spikes and not SEND_IF_EMPTY:

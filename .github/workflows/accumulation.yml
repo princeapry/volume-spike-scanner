@@ -18,6 +18,10 @@ concurrency:
   group: accumulation-scanner
   cancel-in-progress: false
 
+# Dibutuhkan untuk menyimpan state dedup ke branch state-accumulation
+permissions:
+  contents: write
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -26,6 +30,13 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      - name: Ambil state dedup dari run sebelumnya
+        continue-on-error: true   # run pertama: branch state-accumulation belum ada
+        uses: actions/checkout@v4
+        with:
+          ref: state-accumulation
+          path: scanner_state
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -61,4 +72,39 @@ jobs:
           SEND_IF_EMPTY: ${{ vars.SEND_IF_EMPTY }}
           TIMEZONE: ${{ vars.TIMEZONE }}
           BINANCE_BASE_URL: ${{ vars.BINANCE_BASE_URL }}
+          # Dedup antar-run (lihat alert_state.py).
+          # Kosong = default 6 jam. Set 0 di tab Variables untuk mematikan.
+          ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS }}
+          STATE_DIR: scanner_state
         run: python accumulation_scanner.py
+
+      - name: Simpan state dedup ke branch state-accumulation
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd scanner_state 2>/dev/null || { echo "Folder state tidak ada, lewati."; exit 0; }
+          ls *.json >/dev/null 2>&1 || { echo "Belum ada file state, lewati."; exit 0; }
+          rm -rf .git
+          git init -q
+          git checkout -q -b "state-accumulation"
+          git add -A
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "state accumulation $(date -u +%Y-%m-%dT%H:%MZ)"
+          # Satu commit saja, ditimpa tiap run, supaya riwayat repo tidak membengkak
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "state-accumulation"
+          echo "State tersimpan di branch state-accumulation."
+
+      - name: Kabari Telegram kalau run ini gagal
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ] || exit 0
+          curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --form-string "chat_id=${TELEGRAM_CHAT_ID}" \
+            --form-string "text=[GAGAL] Accumulation Scanner tidak selesai jalan. Cek log: ${RUN_URL}" \
+            >/dev/null || true

@@ -1,0 +1,50 @@
+name: Keepalive (cegah workflow mati sendiri)
+
+# MASALAH YANG DISELESAIKAN FILE INI
+# ----------------------------------
+# GitHub mematikan scheduled workflow di repo publik setelah 60 hari tanpa
+# aktivitas repo, dan pematiannya SENYAP (tidak ada notifikasi yang jelas).
+# Artinya: kalau kamu sibuk kerja shift dua bulan dan tidak menyentuh repo ini,
+# semua scanner berhenti jalan tanpa kamu sadari.
+#
+# Workflow ini jalan 2x sebulan dan me-"enable" ulang setiap scheduled workflow
+# lewat GitHub API. Memanggil endpoint enable akan mereset hitungan 60 hari,
+# jadi scanner tetap hidup tanpa perlu commit palsu yang mengotori riwayat.
+#
+# Jalan 2x sebulan (bukan 1x) karena jadwal GitHub Actions sendiri bisa
+# tertunda atau di-drop saat server ramai — ini memberi margin.
+
+on:
+  schedule:
+    # 05:23 UTC tanggal 4 dan 19 (= 14:23 JST). Menit ganjil dipilih supaya
+    # tidak berebut dengan gelombang cron yang jalan di menit 0.
+    - cron: "23 5 4,19 * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write   # dibutuhkan untuk enable workflow lewat API
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Enable ulang semua scheduled workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          # keepalive.yml ikut di-enable supaya workflow ini sendiri tidak mati.
+          for wf in volume-spike.yml confluence.yml reversal.yml accumulation.yml keepalive.yml; do
+            if gh api --silent --method PUT \
+                 "repos/${REPO}/actions/workflows/${wf}/enable" 2>/dev/null; then
+              echo "OK      $wf"
+            else
+              echo "GAGAL   $wf (cek apakah nama file masih benar)"
+            fi
+          done
