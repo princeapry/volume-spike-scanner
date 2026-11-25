@@ -21,8 +21,15 @@ Cara pakai di scanner
 Pengaturan (environment variable)
 ---------------------------------
 ALERT_COOLDOWN_HOURS : jeda minimum sebelum pair yang sama boleh dialertkan
-                       lagi oleh scanner yang sama. Default 6 jam.
+                       lagi oleh scanner yang sama. Kalau kosong, dipakai
+                       default per scanner (DEFAULT_COOLDOWN_HOURS di bawah):
+                         volume-spike 2 jam, confluence 6 jam,
+                         reversal 6 jam, accumulation 24 jam.
                        Set 0 untuk MEMATIKAN dedup (perilaku lama).
+                       Di workflow, nilainya diambil dari Variables
+                       ALERT_COOLDOWN_HOURS_<SCANNER> (mis.
+                       ALERT_COOLDOWN_HOURS_VOLUME_SPIKE), lalu jatuh ke
+                       ALERT_COOLDOWN_HOURS global, lalu ke default di atas.
 STATE_DIR            : folder tempat file state berada. Default "scanner_state".
 
 Prinsip penting: fail-open
@@ -39,11 +46,32 @@ import os
 import time
 from pathlib import Path
 
-# Jeda sebelum pair yang sama boleh dialertkan lagi. 0 atau negatif = dedup mati.
-try:
-    COOLDOWN_HOURS = float(os.getenv("ALERT_COOLDOWN_HOURS", "6").strip() or 6)
-except ValueError:
-    COOLDOWN_HOURS = 6.0
+# Default jeda per scanner. Scanner yang cepat berubah (volume spike, cron
+# per jam) pakai jeda pendek; scanner yang sinyalnya lambat (akumulasi) pakai
+# jeda panjang supaya pair yang sama tidak muncul tiap run.
+DEFAULT_COOLDOWN_HOURS: dict[str, float] = {
+    "volume-spike": 2.0,
+    "confluence": 6.0,
+    "reversal": 6.0,
+    "accumulation": 24.0,
+}
+FALLBACK_COOLDOWN_HOURS = 6.0  # untuk nama scanner yang tidak ada di tabel
+
+
+def cooldown_hours(scanner: str) -> float:
+    """Jeda dedup (jam) untuk scanner ini. 0 atau negatif = dedup mati.
+
+    ALERT_COOLDOWN_HOURS (kalau diisi) menimpa default per scanner.
+    """
+    default = DEFAULT_COOLDOWN_HOURS.get(scanner, FALLBACK_COOLDOWN_HOURS)
+    raw = os.getenv("ALERT_COOLDOWN_HOURS", "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"[WARN] ALERT_COOLDOWN_HOURS='{raw}' bukan angka, pakai default {default:g} jam.")
+        return default
 
 STATE_DIR = os.getenv("STATE_DIR", "scanner_state").strip() or "scanner_state"
 
@@ -98,18 +126,19 @@ def save(scanner: str, state: dict[str, float], now: float | None = None) -> Non
 
 
 def filter_new(scanner: str, items: list, now: float | None = None) -> tuple[list, list]:
-    """Buang item yang pair-nya sudah dialertkan dalam ALERT_COOLDOWN_HOURS terakhir.
+    """Buang item yang pair-nya sudah dialertkan dalam jeda cooldown scanner ini.
 
     `items` adalah list objek hasil scan yang punya atribut `.symbol`
     (Spike / Setup / Hit — keempat scanner memakai nama atribut yang sama).
 
     Kembalikan (items_yang_lolos, daftar_symbol_yang_ditahan).
     """
-    if COOLDOWN_HOURS <= 0 or not items:
+    hours = cooldown_hours(scanner)
+    if hours <= 0 or not items:
         return items, []
 
     now = time.time() if now is None else now
-    window = COOLDOWN_HOURS * 3600
+    window = hours * 3600
     state = load(scanner)
 
     kept: list = []
@@ -130,7 +159,7 @@ def filter_new(scanner: str, items: list, now: float | None = None) -> tuple[lis
 
     if suppressed:
         print(f"[INFO] Dedup: {len(suppressed)} pair ditahan "
-              f"(sudah dialertkan < {COOLDOWN_HOURS:g} jam lalu): "
+              f"(sudah dialertkan < {hours:g} jam lalu): "
               f"{', '.join(suppressed[:10])}"
               f"{' ...' if len(suppressed) > 10 else ''}")
 

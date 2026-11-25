@@ -40,7 +40,8 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           # keepalive.yml ikut di-enable supaya workflow ini sendiri tidak mati.
-          for wf in volume-spike.yml confluence.yml reversal.yml accumulation.yml keepalive.yml; do
+          # alpha-snapshot.yml (manual) ikut supaya tetap aktif kalau nanti diberi jadwal.
+          for wf in volume-spike.yml confluence.yml reversal.yml accumulation.yml alpha-snapshot.yml keepalive.yml; do
             if gh api --silent --method PUT \
                  "repos/${REPO}/actions/workflows/${wf}/enable" 2>/dev/null; then
               echo "OK      $wf"

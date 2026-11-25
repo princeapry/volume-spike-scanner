@@ -82,8 +82,9 @@ jobs:
           TIMEZONE: ${{ vars.TIMEZONE }}
           BINANCE_BASE_URL: ${{ vars.BINANCE_BASE_URL }}
           # Dedup antar-run (lihat alert_state.py).
-          # Kosong = default 6 jam. Set 0 di tab Variables untuk mematikan.
-          ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS }}
+          # Urutan: Variable ALERT_COOLDOWN_HOURS_CONFLUENCE -> ALERT_COOLDOWN_HOURS
+          # (global) -> default 6 jam untuk scanner ini. Set 0 untuk mematikan.
+          ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS_CONFLUENCE || vars.ALERT_COOLDOWN_HOURS }}
           STATE_DIR: scanner_state
         run: python confluence_scanner.py
 

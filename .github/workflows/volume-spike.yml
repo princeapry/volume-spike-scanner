@@ -68,8 +68,9 @@ jobs:
           CONF_BUY_PRESSURE_PCT: ${{ vars.CONF_BUY_PRESSURE_PCT }}
           CONF_MIN_SCORE: ${{ vars.CONF_MIN_SCORE }}
           # Dedup antar-run (lihat alert_state.py).
-          # Kosong = default 6 jam. Set 0 di tab Variables untuk mematikan.
-          ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS }}
+          # Urutan: Variable ALERT_COOLDOWN_HOURS_VOLUME_SPIKE -> ALERT_COOLDOWN_HOURS
+          # (global) -> default 2 jam untuk scanner ini. Set 0 untuk mematikan.
+          ALERT_COOLDOWN_HOURS: ${{ vars.ALERT_COOLDOWN_HOURS_VOLUME_SPIKE || vars.ALERT_COOLDOWN_HOURS }}
           STATE_DIR: scanner_state
         run: python scanner.py
 
