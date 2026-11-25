@@ -34,6 +34,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
+import alert_state
 import accumulation_scanner as accum   # konfigurasi & daftar blokir scanner akumulasi
 import reversal_scanner as reversal    # konfigurasi & evaluate() scanner reversal
 import scanner as base                 # helper bersama + konfigurasi volume spike
@@ -299,6 +300,10 @@ def main() -> int:
 
     print(f"[INFO] Selesai dalam {time.time() - started:.1f} detik. "
           f"Multi-signal: {len(hits)}, error: {errors}")
+
+    # Buang pair yang sudah dialertkan dalam ALERT_COOLDOWN_HOURS terakhir.
+    # Set ALERT_COOLDOWN_HOURS=0 untuk mematikan dedup.
+    hits, _ = alert_state.filter_new("confluence", hits)
 
     if not hits and not SEND_IF_EMPTY:
         print("[INFO] Tidak ada pair multi-signal, tidak mengirim notifikasi.")

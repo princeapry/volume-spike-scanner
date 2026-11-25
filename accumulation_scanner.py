@@ -42,6 +42,7 @@ from dataclasses import dataclass
 
 import requests
 
+import alert_state
 import scanner as base  # helper bersama; aman di-import karena main() tidak ikut jalan
 import signals
 from signals import _env_bool, _env_float, _env_int, _env_str
@@ -471,6 +472,10 @@ def main() -> int:
 
     print(f"[INFO] Selesai dalam {time.time() - started:.1f} detik. "
           f"Akumulasi: {len(setups)}, error: {errors}")
+
+    # Buang pair yang sudah dialertkan dalam ALERT_COOLDOWN_HOURS terakhir.
+    # Set ALERT_COOLDOWN_HOURS=0 untuk mematikan dedup.
+    setups, _ = alert_state.filter_new("accumulation", setups)
 
     if not setups and not SEND_IF_EMPTY:
         print("[INFO] Tidak ada pair akumulasi, tidak mengirim notifikasi.")
