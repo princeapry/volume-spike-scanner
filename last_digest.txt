@@ -1,0 +1,24 @@
+🛰 <b>ALPHA SNAPSHOT</b> — 2026-11-27 17:32
+cek terakhir 5j 3m lalu • 688 token • liq ≥ $50.00K • mcap ≤ $50.00M
+
+📈 <b>VOLUME ≥5x NORMAL (5j 3m terakhir, min $10.00K)</b>
+• <b>ROAM</b> 15.4x · ~$215.55K (Roam) — 0.01016973 (+0.1% 24j)
+   liq $88.07K • holders 132920 • mcap $3.71M • <a href="https://bscscan.com/token/0x3fefe29da25bea166fb5f6ade7b5976d2b0e586b">BscScan</a>
+• <b>ST</b> 14.2x · ~$17.52K (Sentio) — 0.00676736 (-8.4% 24j)
+   liq $476.58K • holders 32323 • mcap $596.33K • <a href="https://bscscan.com/token/0x70be40667385500c5da7f108a022e21b606045dd">BscScan</a>
+• <b>AKE</b> 5.7x · ~$5.38M — 0.0011035 (-26.5% 24j)
+   liq $550.86K • holders 45919 • mcap $25.16M • <a href="https://bscscan.com/token/0x2c3a8ee94ddd97244a93bc48298f97d2c412f7db">BscScan</a>
+• <b>COLLECT</b> 5.4x · ~$5.63M (Collect on Fanable) — 0.02887011 (+8.3% 24j)
+   liq $2.31M • holders 53363 • mcap $32.72M • <a href="https://bscscan.com/token/0x4b3d30992f003c8167699735f5ab2831b2a087d3">BscScan</a>
+• <b>CNPY</b> 5.0x · ~$302.55K (Canopy) — 0.0896528 (-9.3% 24j)
+   liq $1.07M • holders 14670 • mcap $6.02M • <a href="https://bscscan.com/token/0xc69b16cf18cea1e5d0bb6a1a9db802097790ddd2">BscScan</a>
+
+📒 <b>Alert sebelumnya</b> (harga sekarang vs saat alert)
+• MPLX (VOL, 5j 3m lalu): <b>-1.1%</b>
+• BROCCOLI (VOL, 5j 3m lalu): <b>+6.3%</b>
+• ZENT (VOL, 5j 3m lalu): <b>-0.4%</b>
+• GRVT (VOL, 5j 3m lalu): <b>+2.0%</b>
+• KGEN (VOL, 5j 3m lalu): <b>+0.3%</b>
+• BEE (VOL, 9j 6m lalu): <b>+3.2%</b>
+…+26 lainnya
+median +0.7% • naik 18/32
